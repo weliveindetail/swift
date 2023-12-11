@@ -2464,12 +2464,12 @@ IRGenDebugInfoImpl::emitFunction(const SILDebugScope *DS, llvm::Function *Fn,
   else
     llvm_unreachable("function has no mangled name");
 
-  StringRef Name;
+  std::string Name;
   if (DS) {
     if (DS->Loc.isSILFile())
-      Name = SILFn->getName();
+      Name = SILFn->getName().str();
     else
-      Name = getName(DS->Loc);
+      Name = getName(DS->Loc).str();
   }
 
   /// The source line used for the function prologue.
@@ -2498,7 +2498,7 @@ IRGenDebugInfoImpl::emitFunction(const SILDebugScope *DS, llvm::Function *Fn,
       IGM.getSILModule().getASTContext().getEntryPointFunctionName()) {
     File = MainFile;
     Line = 1;
-    Name = LinkageName;
+    Name = LinkageName.str();
   }
 
   CanSILFunctionType FnTy = getFunctionType(SILTy);
@@ -2526,6 +2526,10 @@ IRGenDebugInfoImpl::emitFunction(const SILDebugScope *DS, llvm::Function *Fn,
       isAllocatingConstructor(Rep, DeclCtx)) {
     Flags |= llvm::DINode::FlagArtificial;
     ScopeLine = 0;
+  } else if (Name.empty() && LinkageName.startswith("$s")) {
+    std::string oldName = Name;
+    Name = demangleSymbolAsString(LinkageName, DemangleOptions::SimplifiedUIDemangleOptions());
+    fprintf(stderr, "DEMANGLE (%s, %s) ---> %s\n", oldName.c_str(), LinkageName.str().c_str(), Name.c_str());
   }
 
   if (FnTy &&
