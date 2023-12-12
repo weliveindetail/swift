@@ -2501,6 +2501,19 @@ IRGenDebugInfoImpl::emitFunction(const SILDebugScope *DS, llvm::Function *Fn,
     Name = LinkageName;
   }
 
+  if (Opts.DebugInfoFormat == IRGenDebugInfoFormat::CodeView) {
+    if (SILFn && Name.empty()) {
+      assert(LinkageName.startswith("$s") && "SIL function has Swift mangling");
+
+      auto DemangleOpts = DemangleOptions::SimplifiedUIDemangleOptions();
+      DemangleOpts.ShowFunctionArgumentTypes = true;
+      Name = demangleSymbolAsString(LinkageName, DemangleOpts);
+
+      LLVM_DEBUG(llvm::dbgs() << "Explicit demangle for Windows crash dumps: "
+                              << LinkageName << " ---> " << Name << "\n");
+    }
+  }
+
   CanSILFunctionType FnTy = getFunctionType(SILTy);
   auto Params = Opts.DebugInfoLevel > IRGenDebugInfoLevel::LineTables
                     ? createParameterTypes(SILTy)
