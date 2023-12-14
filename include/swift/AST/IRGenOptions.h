@@ -239,6 +239,9 @@ public:
   /// The DWARF version of debug info.
   unsigned DWARFVersion;
 
+  /// Enables DWARF Fission and sets the file path for .dwo output.
+  std::string SplitDwarfOutput;
+
   /// The command line string that is to be stored in the debug info.
   std::string DebugFlags;
 

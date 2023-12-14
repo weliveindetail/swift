@@ -125,6 +125,9 @@ public:
   /// What kind of debug info to generate.
   IRGenDebugInfoFormat DebugInfoFormat = IRGenDebugInfoFormat::None;
 
+  /// Emit debug info as split-DWARF (Fission) in separate .dwo files.
+  bool DWARFFission = false;
+
   /// Whether or not the driver should generate a module.
   bool ShouldGenerateModule = false;
 
@@ -390,6 +393,11 @@ private:
                                       const TypeToPathMap *OutputMap,
                                       StringRef workingDirectory,
                                       CommandOutput *Output) const;
+
+  void chooseModuleSplitDWARFOutputPath(Compilation &C,
+                                        const TypeToPathMap *OutputMap,
+                                        StringRef workingDirectory,
+                                        CommandOutput *Output) const;
 
   void chooseSwiftSourceInfoOutputPath(Compilation &C,
                                        const TypeToPathMap *OutputMap,

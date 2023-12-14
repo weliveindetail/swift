@@ -140,6 +140,9 @@ OUTPUT(PrivateModuleInterfaceOutputPath,
 /// The path to which we should emit module summary file.
 OUTPUT(ModuleSummaryOutputPath, TY_SwiftModuleSummaryFile)
 
+/// The path of the DWARF fission file.
+OUTPUT(SplitDwarfObjectPath, TY_SplitDwarfObjectFile)
+
 /// The output path to generate ABI baseline.
 OUTPUT(ABIDescriptorOutputPath, TY_SwiftABIDescriptor)
 

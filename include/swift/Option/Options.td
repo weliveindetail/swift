@@ -993,6 +993,13 @@ def file_compilation_dir : Separate<["-"], "file-compilation-dir">,
 def debug_info_format : Joined<["-"], "debug-info-format=">,
   Flags<[FrontendOption]>,
   HelpText<"Specify the debug info format type to either 'dwarf' or 'codeview'">;
+def dwarf_fission : Flag<["-"], "dwarf-fission">,
+  Flags<[FrontendOption]>,
+  HelpText<"Emit debug info as split-DWARF (Fission) in a separate .dwo file">;
+def emit_split_dwarf_path : Separate<["-"], "split-dwarf-output">,
+  Flags<[FrontendOption, NoInteractiveOption, ArgumentIsPath,
+         SupplementaryOutput]>,
+  HelpText<"Output debug info as split-DWARF (Fission) .dwo file to <path>">;
 
 def prefix_serialized_debugging_options : Flag<["-"], "prefix-serialized-debugging-options">,
   Flags<[FrontendOption]>,

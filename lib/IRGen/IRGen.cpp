@@ -75,6 +75,7 @@
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/Mutex.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/VirtualOutputBackend.h"
 #include "llvm/Support/VirtualOutputConfig.h"
 #include "llvm/Target/TargetMachine.h"
@@ -127,6 +128,9 @@ swift::getIRTargetOptions(const IRGenOptions &Opts, ASTContext &Ctx) {
   // on Darwin platforms but not on others.
   TargetOpts.DebuggerTuning = llvm::DebuggerKind::LLDB;
   TargetOpts.FunctionSections = Opts.FunctionSections;
+
+  // Set option to split debug-info into a separate .dwo file.
+  TargetOpts.MCOptions.SplitDwarfFile = Opts.SplitDwarfOutput;
 
   auto *Clang = static_cast<ClangImporter *>(Ctx.getClangModuleLoader());
 
@@ -610,17 +614,38 @@ bool swift::performLLVM(const IRGenOptions &Opts,
   if (OutputFilename.empty())
     return false;
 
+  llvm::Optional<llvm::vfs::OutputFile> DWOFile;
+  SWIFT_DEFER {
+    if (!DWOFile)
+      return;
+    if (auto E = DWOFile->keep()) {
+      diagnoseSync(Diags, DiagMutex, SourceLoc(), diag::error_closing_output,
+                   Opts.SplitDwarfOutput, toString(std::move(E)));
+    }
+  };
+  if (Opts.OutputKind == IRGenOutputKind::ObjectFile &&
+      !Opts.SplitDwarfOutput.empty()) {
+    // Try to open the output file.  Clobbering an existing file is fine.
+    // Open in binary mode if we're doing binary output.
+    llvm::vfs::OutputConfig Config;
+    if (auto Err = Backend.createFile(Opts.SplitDwarfOutput, Config)
+                       .moveInto(DWOFile)) {
+      diagnoseSync(Diags, DiagMutex, SourceLoc(), diag::error_opening_output,
+                   Opts.SplitDwarfOutput, toString(std::move(Err)));
+      return true;
+    }
+  }
+
   return compileAndWriteLLVM(Module, TargetMachine, Opts, Stats, Diags,
-                                    *OutputFile, DiagMutex);
+                             *OutputFile, DiagMutex,
+                             DWOFile ? &DWOFile->getOS() : nullptr);
 }
 
-bool swift::compileAndWriteLLVM(llvm::Module *module,
-                                llvm::TargetMachine *targetMachine,
-                                const IRGenOptions &opts,
-                                UnifiedStatsReporter *stats,
-                                DiagnosticEngine &diags,
-                                llvm::raw_pwrite_stream &out,
-                                llvm::sys::Mutex *diagMutex) {
+bool swift::compileAndWriteLLVM(
+    llvm::Module *module, llvm::TargetMachine *targetMachine,
+    const IRGenOptions &opts, UnifiedStatsReporter *stats,
+    DiagnosticEngine &diags, llvm::raw_pwrite_stream &out,
+    llvm::sys::Mutex *diagMutex, llvm::raw_pwrite_stream *dwoOut) {
 
   // Set up the final code emission pass. Bitcode/LLVM IR is emitted as part of
   // the optimization pass pipeline.
@@ -641,11 +666,12 @@ bool swift::compileAndWriteLLVM(llvm::Module *module,
     FileType =
         (opts.OutputKind == IRGenOutputKind::NativeAssembly ? CGFT_AssemblyFile
                                                             : CGFT_ObjectFile);
+
     EmitPasses.add(createTargetTransformInfoWrapperPass(
         targetMachine->getTargetIRAnalysis()));
 
-    bool fail = targetMachine->addPassesToEmitFile(EmitPasses, out, nullptr,
-                                                   FileType, !opts.Verify);
+    bool fail = targetMachine->addPassesToEmitFile(
+        EmitPasses, out, dwoOut, FileType, !opts.Verify);
     if (fail) {
       diagnoseSync(diags, diagMutex, SourceLoc(),
                    diag::error_codegen_init_fail);
