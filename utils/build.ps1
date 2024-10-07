@@ -1456,74 +1456,17 @@ function Build-Compilers() {
         $env:LIT_XFAIL=$TestsToXFail -join ";"
         $env:LIT_FILTER_OUT="($($TestsToSkip -join '|'))"
 
-        # lldb.exe loads these libraries which must be found on PATH.
-        # * swiftCore.dll
-        # * cmark-gfm.dll
-        # * python39.dll
-        # * dbghelp.dll
-        $env:Path="$RuntimeBinaryCache\bin;${env:Path}"
-        $env:Path="$CMarkGFMDLLDir;${env:Path}"
-        $env:Path="$BinaryCache\Python$HostArchName-$PythonVersion\tools;${env:Path}"
-        $env:Path="$VSInstallRoot\VC\Tools\Llvm\x64\bin;${env:Path}"
-
-        # The lldb test Python module needs these libraries.
-        # Python3.8+ doesn't search for dlls on PATH so we must copy them into the module's directory.
-        # TODO(https://github.com/llvm/llvm-project/issues/46235): Find a way to do this by modifying
-        # bindings/python.swig instead.
-        $LLDBPythonModuleDir="$CompilersBinaryCache\lib\site-packages\lldb"
-        cp $RuntimeBinaryCache\bin\swiftCore.dll $LLDBPythonModuleDir
-        cp $CompilersBinaryCache\bin\SwiftBasicFormat.dll $LLDBPythonModuleDir
-        cp $CompilersBinaryCache\bin\SwiftCompilerPluginMessageHandling.dll $LLDBPythonModuleDir
-        cp $CompilersBinaryCache\bin\SwiftDiagnostics.dll $LLDBPythonModuleDir
-        cp $CompilersBinaryCache\bin\SwiftIDEUtils.dll $LLDBPythonModuleDir
-        cp $CompilersBinaryCache\bin\SwiftIfConfig.dll $LLDBPythonModuleDir
-        cp $CompilersBinaryCache\bin\SwiftInProcPluginServer.dll $LLDBPythonModuleDir
-        cp $CompilersBinaryCache\bin\SwiftLibraryPluginProvider.dll $LLDBPythonModuleDir
-        cp $CompilersBinaryCache\bin\SwiftMacros.dll $LLDBPythonModuleDir
-        cp $CompilersBinaryCache\bin\SwiftOperators.dll $LLDBPythonModuleDir
-        cp $CompilersBinaryCache\bin\SwiftParser.dll $LLDBPythonModuleDir
-        cp $CompilersBinaryCache\bin\SwiftParserDiagnostics.dll $LLDBPythonModuleDir
-        cp $CompilersBinaryCache\bin\SwiftRefactor.dll $LLDBPythonModuleDir
-        cp $CompilersBinaryCache\bin\SwiftSyntax.dll $LLDBPythonModuleDir
-        cp $CompilersBinaryCache\bin\SwiftSyntaxBuilder.dll $LLDBPythonModuleDir
-        cp $CompilersBinaryCache\bin\SwiftSyntaxMacroExpansion.dll $LLDBPythonModuleDir
-        cp $CompilersBinaryCache\bin\SwiftSyntaxMacros.dll $LLDBPythonModuleDir
-        cp $CompilersBinaryCache\bin\_CompilerSwiftBasicFormat.dll $LLDBPythonModuleDir
-        cp $CompilersBinaryCache\bin\_CompilerSwiftCompilerPluginMessageHandling.dll $LLDBPythonModuleDir
-        cp $CompilersBinaryCache\bin\_CompilerSwiftDiagnostics.dll $LLDBPythonModuleDir
-        cp $CompilersBinaryCache\bin\_CompilerSwiftIDEUtils.dll $LLDBPythonModuleDir
-        cp $CompilersBinaryCache\bin\_CompilerSwiftIfConfig.dll $LLDBPythonModuleDir
-        cp $CompilersBinaryCache\bin\_CompilerSwiftLibraryPluginProvider.dll $LLDBPythonModuleDir
-        cp $CompilersBinaryCache\bin\_CompilerSwiftOperators.dll $LLDBPythonModuleDir
-        cp $CompilersBinaryCache\bin\_CompilerSwiftParser.dll $LLDBPythonModuleDir
-        cp $CompilersBinaryCache\bin\_CompilerSwiftParserDiagnostics.dll $LLDBPythonModuleDir
-        cp $CompilersBinaryCache\bin\_CompilerSwiftRefactor.dll $LLDBPythonModuleDir
-        cp $CompilersBinaryCache\bin\_CompilerSwiftSyntax.dll $LLDBPythonModuleDir
-        cp $CompilersBinaryCache\bin\_CompilerSwiftSyntaxBuilder.dll $LLDBPythonModuleDir
-        cp $CompilersBinaryCache\bin\_CompilerSwiftSyntaxMacroExpansion.dll $LLDBPythonModuleDir
-        cp $CompilersBinaryCache\bin\_CompilerSwiftSyntaxMacros.dll $LLDBPythonModuleDir
-        cp $CompilersBinaryCache\bin\_InternalSwiftScan.dll $LLDBPythonModuleDir
-        cp $CMarkGFMDLLDir\cmark-gfm.dll $LLDBPythonModuleDir
-
         $TestingDefines += @{
-          LLDB_ENFORCE_STRICT_TEST_REQUIREMENTS = "YES";
-          # Optional LLDB deps. For testing, only Python is needed.
           LLDB_ENABLE_PYTHON = "YES";
-          LLDB_ENABLE_LIBEDIT = "NO";
-          LLDB_ENABLE_CURSES = "NO";
-          LLDB_ENABLE_LZMA = "NO";
-          LLDB_ENABLE_LIBXML2 = "NO";
-          LLDB_ENABLE_LUA = "NO";
-          # These are passed to LLDB's dotest.py.
-          # Watchpoint tests fail on windows. See https://github.com/llvm/llvm-project/issues/22140.
-          # LLDB's python module requires Swift runtimelibs and cmark-gfm.dll.
-          LLDB_TEST_USER_ARGS = "--skip-category=watchpoint";
+          # Check for required Python modules in CMake
+          LLDB_ENFORCE_STRICT_TEST_REQUIREMENTS = "YES";
+          # Tests use in-tree LLD for linking on Windows
           LLVM_ENABLE_PROJECTS = "clang;clang-tools-extra;lld;lldb";
-          LLVM_ENABLE_DIA_SDK = "YES";
-          # gtest sharding breaks llvm-lit's --xfail and LIT_XFAIL inputs. See https://github.com/llvm/llvm-project/issues/102264.
+          # No watchpoint support on windows: https://github.com/llvm/llvm-project/issues/24820
+          LLDB_TEST_USER_ARGS = "--skip-category=watchpoint";
+          # gtest sharding breaks llvm-lit's --xfail and LIT_XFAIL inputs: https://github.com/llvm/llvm-project/issues/102264
           LLVM_LIT_ARGS = "-v --no-gtest-sharding --show-xfail --show-unsupported";
-
-          # LLDB Unit tests link against this library.
+          # LLDB Unit tests link against this library
           LLVM_UNITTEST_LINK_FLAGS = "$($Arch.SDKInstallRoot)\usr\lib\swift\windows\$($Arch.LLVMName)\swiftCore.lib";
         }
       }
