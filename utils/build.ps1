@@ -1456,6 +1456,16 @@ function Build-Compilers() {
         $env:LIT_XFAIL=$TestsToXFail -join ";"
         $env:LIT_FILTER_OUT="($($TestsToSkip -join '|'))"
 
+        # Install packages that the test suite requires
+        & $python -m pip install psutil
+        & $python -m pip install packaging
+
+        # Install make tool from GunWin32
+        $MakeToolPath = "C:/Program Files (x86)/GnuWin32/bin/make.exe"
+        if (-not (Test-Path $MakeToolPath)) {
+          & winget install GnuWin32.Make
+        }
+
         $TestingDefines += @{
           LLDB_ENABLE_PYTHON = "YES";
           # Check for required Python modules in CMake
@@ -1464,6 +1474,8 @@ function Build-Compilers() {
           LLVM_ENABLE_PROJECTS = "clang;clang-tools-extra;lld;lldb";
           # No watchpoint support on windows: https://github.com/llvm/llvm-project/issues/24820
           LLDB_TEST_USER_ARGS = "--skip-category=watchpoint";
+          # TODO: winget install GnuWin32.Make
+          LLDB_TEST_MAKE = $MakeToolPath
           # gtest sharding breaks llvm-lit's --xfail and LIT_XFAIL inputs: https://github.com/llvm/llvm-project/issues/102264
           LLVM_LIT_ARGS = "-v --no-gtest-sharding --show-xfail --show-unsupported";
           # LLDB Unit tests link against this library
