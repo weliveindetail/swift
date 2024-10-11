@@ -1455,8 +1455,6 @@ function Build-Compilers() {
           LLDB_INCLUDE_TESTS = "YES";
           # Check for required Python modules in CMake
           LLDB_ENFORCE_STRICT_TEST_REQUIREMENTS = "YES";
-          # Tests use in-tree LLD for linking on Windows
-          LLVM_ENABLE_PROJECTS = "clang;clang-tools-extra;lld;lldb";
           # No watchpoint support on windows: https://github.com/llvm/llvm-project/issues/24820
           LLDB_TEST_USER_ARGS = "--skip-category=watchpoint";
           # gtest sharding breaks llvm-lit's --xfail and LIT_XFAIL inputs: https://github.com/llvm/llvm-project/issues/102264
