@@ -1429,9 +1429,6 @@ function Build-Compilers() {
       Get-HostProjectBinaryCache Compilers
     }
 
-    $RuntimeBinaryCache = Get-TargetProjectBinaryCache $Arch Runtime
-    $CMarkGFMDLLDir="$($BuildArch.BinaryCache)\cmark-gfm-0.29.0.gfm.13\src"
-    $PythonDLLDir="$BinaryCache\Python$HostArchName-$PythonVersion\tools"
     $BuildTools = Join-Path -Path (Get-BuildProjectBinaryCache BuildTools) -ChildPath bin
 
     if ($TestClang -or $TestLLD -or $TestLLDB -or $TestLLVM -or $TestSwift) {
@@ -1472,6 +1469,11 @@ function Build-Compilers() {
         if (-not (Test-Path $MakeToolPath)) {
           & winget install GnuWin32.Make
         }
+
+        # Transitive dependency if _lldb.pyd: CMake cannot copy it, because it
+        # doesn't exist during the initial build.
+        $RuntimeBinaryCache = Get-TargetProjectBinaryCache $Arch Runtime
+        cp $RuntimeBinaryCache\bin\swiftCore.dll "$CompilersBinaryCache\lib\site-packages\lldb"
 
         $TestingDefines += @{
           LLDB_ENABLE_PYTHON = "YES";
