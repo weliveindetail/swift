@@ -1370,6 +1370,11 @@ function Build-Compilers() {
           & winget install GnuWin32.Make
         }
 
+        # Transitive dependency if _lldb.pyd: CMake cannot copy it, because it
+        # doesn't exist during the initial build.
+        $RuntimeBinaryCache = Get-TargetProjectBinaryCache $Arch Runtime
+        cp $RuntimeBinaryCache\bin\swiftCore.dll "$CompilersBinaryCache\lib\site-packages\lldb"
+
         $TestingDefines += @{
           LLDB_ENABLE_PYTHON = "YES";
           # Check for required Python modules in CMake
