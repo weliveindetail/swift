@@ -194,6 +194,12 @@ $WiXVersion = "4.0.5"
 # Avoid $env:ProgramFiles in case this script is running as x86
 $UnixToolsBinDir = "$env:SystemDrive\Program Files\Git\usr\bin"
 
+# The make tool isn't part of MSYS, but we need it for LLDB tests
+$MakeToolPath = "C:/Program Files (x86)/GnuWin32/bin/make.exe"
+if (-not (Test-Path $MakeToolPath)) {
+  & winget install GnuWin32.Make
+}
+
 $python = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Shared\Python39_64\python.exe"
 if (-not (Test-Path $python)) {
   $python = (where.exe python) | Select-Object -First 1
@@ -1440,12 +1446,6 @@ function Build-Compilers() {
         & $python -m pip install psutil
         & $python -m pip install packaging
 
-        # Install make tool from GunWin32
-        $MakeToolPath = "C:/Program Files (x86)/GnuWin32/bin/make.exe"
-        if (-not (Test-Path $MakeToolPath)) {
-          & winget install GnuWin32.Make
-        }
-
         # Transitive dependency if _lldb.pyd: CMake cannot copy it, because it
         # doesn't exist during the initial build.
         $RuntimeBinaryCache = Get-TargetProjectBinaryCache $Arch Runtime
@@ -1459,8 +1459,6 @@ function Build-Compilers() {
           LLVM_ENABLE_PROJECTS = "clang;clang-tools-extra;lld;lldb";
           # No watchpoint support on windows: https://github.com/llvm/llvm-project/issues/24820
           LLDB_TEST_USER_ARGS = "--skip-category=watchpoint";
-          # TODO: winget install GnuWin32.Make
-          LLDB_TEST_MAKE = $MakeToolPath
           # gtest sharding breaks llvm-lit's --xfail and LIT_XFAIL inputs: https://github.com/llvm/llvm-project/issues/102264
           LLVM_LIT_ARGS = "-v --no-gtest-sharding --show-xfail --show-unsupported";
           # LLDB Unit tests link against this library
@@ -1505,6 +1503,7 @@ function Build-Compilers() {
         LLDB_PYTHON_EXT_SUFFIX = ".pyd";
         LLDB_PYTHON_RELATIVE_PATH = "lib/site-packages";
         LLDB_TABLEGEN = (Join-Path -Path $BuildTools -ChildPath "lldb-tblgen.exe");
+        LLDB_TEST_MAKE = $MakeToolPath;
         LLVM_CONFIG_PATH = (Join-Path -Path $BuildTools -ChildPath "llvm-config.exe");
         LLVM_EXTERNAL_SWIFT_SOURCE_DIR = "$SourceCache\swift";
         LLVM_NATIVE_TOOL_DIR = $BuildTools;
