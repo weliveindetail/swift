@@ -1476,7 +1476,7 @@ function Build-Compilers() {
         cp $RuntimeBinaryCache\bin\swiftCore.dll "$CompilersBinaryCache\lib\site-packages\lldb"
 
         $TestingDefines += @{
-          LLDB_ENABLE_PYTHON = "YES";
+          LLDB_INCLUDE_TESTS = "YES";
           # Check for required Python modules in CMake
           LLDB_ENFORCE_STRICT_TEST_REQUIREMENTS = "YES";
           # Tests use in-tree LLD for linking on Windows
