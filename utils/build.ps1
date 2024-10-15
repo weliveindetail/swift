@@ -1369,6 +1369,7 @@ function Build-Compilers() {
         # Install packages that the test suite requires
         & $python -m pip install psutil
         & $python -m pip install packaging
+        & $python -m pip install unittest2
 
         # Transitive dependency if _lldb.pyd: CMake cannot copy it, because it
         # doesn't exist during the initial build.
