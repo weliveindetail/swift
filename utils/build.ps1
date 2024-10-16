@@ -1371,10 +1371,15 @@ function Build-Compilers() {
         & $python -m pip install packaging
         & $python -m pip install unittest2
 
-        # Transitive dependency if _lldb.pyd: CMake cannot copy it, because it
-        # doesn't exist during the initial build.
         $RuntimeBinaryCache = Get-TargetProjectBinaryCache $Arch Runtime
+
+        # Transitive dependency if _lldb.pyd
         cp $RuntimeBinaryCache\bin\swiftCore.dll "$CompilersBinaryCache\lib\site-packages\lldb"
+
+        # Runtime dependencies of repl_swift.exe
+        $SwiftrtSubdir = "lib\swift\windows\$($Arch.LLVMName)"
+        cp "$RuntimeBinaryCache\$SwiftrtSubdir\swiftrt.obj" "$CompilersBinaryCache\$SwiftrtSubdir"
+        cp "$RuntimeBinaryCache\bin\swiftCore.dll" "$CompilersBinaryCache\bin"
 
         $TestingDefines += @{
           LLDB_INCLUDE_TESTS = "YES";
