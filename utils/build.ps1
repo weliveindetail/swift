@@ -194,12 +194,6 @@ $WiXVersion = "4.0.5"
 # Avoid $env:ProgramFiles in case this script is running as x86
 $UnixToolsBinDir = "$env:SystemDrive\Program Files\Git\usr\bin"
 
-# The make tool isn't part of MSYS, but we need it for LLDB tests
-$MakeToolPath = "C:/Program Files (x86)/GnuWin32/bin/make.exe"
-if (-not (Test-Path $MakeToolPath)) {
-  & winget install GnuWin32.Make
-}
-
 $python = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Shared\Python39_64\python.exe"
 if (-not (Test-Path $python)) {
   $python = (where.exe python) | Select-Object -First 1
@@ -733,6 +727,12 @@ function Fetch-Dependencies {
   if ($SkipBuild) { return }
 
   DownloadAndVerify $PinnedBuild "$BinaryCache\$PinnedToolchain.exe" $PinnedSHA256
+
+  # The make tool isn't part of MSYS, but we need it for LLDB tests
+  $GnuWin32MakeURL = "https://downloads.sourceforge.net/project/ezwinports/make-4.4.1-without-guile-w32-bin.zip"
+  $GnuWin32MakeHash = "fb66a02b530f7466f6222ce53c0b602c5288e601547a034e4156a512dd895ee7"
+  DownloadAndVerify $GnuWin32MakeURL "$BinaryCache\GnuWin32Make-4.4.1.zip" $GnuWin32MakeHash
+  Extract-ZipFile GnuWin32Make-4.4.1.zip $BinaryCache GnuWin32Make-4.4.1
 
   # TODO(compnerd) stamp/validate that we need to re-extract
   New-Item -ItemType Directory -ErrorAction Ignore $BinaryCache\toolchains | Out-Null
@@ -1540,7 +1540,7 @@ function Build-Compilers() {
         LLDB_PYTHON_EXT_SUFFIX = ".pyd";
         LLDB_PYTHON_RELATIVE_PATH = "lib/site-packages";
         LLDB_TABLEGEN = (Join-Path -Path $BuildTools -ChildPath "lldb-tblgen.exe");
-        LLDB_TEST_MAKE = $MakeToolPath;
+        LLDB_TEST_MAKE = "$BinaryCache\GnuWin32Make-4.4.1\bin\make.exe";
         LLVM_CONFIG_PATH = (Join-Path -Path $BuildTools -ChildPath "llvm-config.exe");
         LLVM_EXTERNAL_SWIFT_SOURCE_DIR = "$SourceCache\swift";
         LLVM_NATIVE_TOOL_DIR = $BuildTools;
