@@ -22,6 +22,7 @@
 #include "swift/AST/ExistentialLayout.h"
 #include "swift/AST/Expr.h"
 #include "swift/AST/FileUnit.h"
+#include "swift/AST/GenericEnvironment.h"
 #include "swift/AST/GenericSignature.h"
 #include "swift/AST/Initializer.h"
 #include "swift/AST/LazyResolver.h"
@@ -106,6 +107,10 @@ static StringRef getCodeForAccessorKind(AccessorKind kind) {
     return "au";
   case AccessorKind::Init:
     return "i";
+  case AccessorKind::Modify2:
+    return "x";
+  case AccessorKind::Read2:
+    return "y";
   }
   llvm_unreachable("bad accessor kind");
 }
@@ -128,11 +133,11 @@ std::string ASTMangler::mangleEntity(const ValueDecl *decl, SymbolKind SKind) {
 }
 
 std::string ASTMangler::mangleDestructorEntity(const DestructorDecl *decl,
-                                               bool isDeallocating,
+                                               DestructorKind kind,
                                                SymbolKind SKind) {
   llvm::SaveAndRestore X(AllowInverses, inversesAllowed(decl));
   beginMangling();
-  appendDestructorEntity(decl, isDeallocating);
+  appendDestructorEntity(decl, kind);
   appendSymbolKind(SKind);
   return finalize();
 }
@@ -166,17 +171,6 @@ std::string ASTMangler::mangleAccessorEntity(AccessorKind kind,
   llvm::SaveAndRestore X(AllowInverses, inversesAllowed(decl));
   beginMangling();
   appendAccessorEntity(getCodeForAccessorKind(kind), decl, isStatic);
-  appendSymbolKind(SKind);
-  return finalize();
-}
-
-std::string ASTMangler::mangleGlobalGetterEntity(const ValueDecl *decl,
-                                                 SymbolKind SKind) {
-  assert(isa<VarDecl>(decl) && "Only variables can have global getters");
-  llvm::SaveAndRestore X(AllowInverses, inversesAllowed(decl));
-  beginMangling();
-  BaseEntitySignature base(decl);
-  appendEntity(decl, base, "vG", /*isStatic*/false);
   appendSymbolKind(SKind);
   return finalize();
 }
@@ -248,12 +242,15 @@ std::string ASTMangler::mangleConstructorVTableThunk(
   return finalize();
 }
 
-std::string ASTMangler::mangleWitnessTable(const RootProtocolConformance *C) {
+std::string ASTMangler::mangleWitnessTable(const ProtocolConformance *C) {
   llvm::SaveAndRestore X(AllowInverses,
                          inversesAllowedIn(C->getDeclContext()));
 
   beginMangling();
-  if (isa<NormalProtocolConformance>(C)) {
+  if (auto *sc = dyn_cast<SpecializedProtocolConformance>(C)) {
+    appendProtocolConformance(sc);
+    appendOperator("WP");
+  } else if (isa<NormalProtocolConformance>(C)) {
     appendProtocolConformance(C);
     appendOperator("WP");
   } else if (isa<SelfProtocolConformance>(C)) {
@@ -639,6 +636,16 @@ std::string ASTMangler::mangleSILDifferentiabilityWitness(StringRef originalName
   return finalize();
 }
 
+std::string ASTMangler::mangleSILThunkKind(StringRef originalName,
+                                           SILThunkKind thunkKind) {
+  beginManglingWithoutPrefix();
+  appendOperator(originalName);
+  // Prefix for thunk inst based thunks
+  auto code = (char)thunkKind.getMangledKind();
+  appendOperator("TT", StringRef(&code, 1));
+  return finalize();
+}
+
 std::string ASTMangler::mangleAutoDiffGeneratedDeclaration(
     AutoDiffGeneratedDeclarationKind declKind, StringRef origFnName,
     unsigned bbId, AutoDiffLinearMapKind linearMapKind,
@@ -698,8 +705,7 @@ static Type getTypeForDWARFMangling(Type t) {
       }
       return t->getCanonicalType();
     },
-    MakeAbstractConformanceForGenericType(),
-    SubstFlags::AllowLoweredTypes);
+    MakeAbstractConformanceForGenericType());
 }
 
 std::string ASTMangler::mangleTypeForDebugger(Type Ty, GenericSignature sig) {
@@ -838,7 +844,7 @@ void ASTMangler::appendAnyDecl(const ValueDecl *Decl) {
   if (auto Ctor = dyn_cast<ConstructorDecl>(Decl)) {
     appendConstructorEntity(Ctor, /*isAllocating=*/false);
   } else if (auto Dtor = dyn_cast<DestructorDecl>(Decl)) {
-    appendDestructorEntity(Dtor, /*isDeallocating=*/false);
+    appendDestructorEntity(Dtor, DestructorKind::NonDeallocating);
   } else if (auto GTD = dyn_cast<GenericTypeDecl>(Decl)) {
     appendAnyGenericType(GTD);
   } else if (isa<AssociatedTypeDecl>(Decl)) {
@@ -940,7 +946,7 @@ std::string ASTMangler::mangleHasSymbolQuery(const ValueDecl *Decl) {
   if (auto Ctor = dyn_cast<ConstructorDecl>(Decl)) {
     appendConstructorEntity(Ctor, /*isAllocating=*/false);
   } else if (auto Dtor = dyn_cast<DestructorDecl>(Decl)) {
-    appendDestructorEntity(Dtor, /*isDeallocating=*/false);
+    appendDestructorEntity(Dtor, DestructorKind::NonDeallocating);
   } else if (auto GTD = dyn_cast<GenericTypeDecl>(Decl)) {
     appendAnyGenericType(GTD);
   } else if (isa<AssociatedTypeDecl>(Decl)) {
@@ -1285,6 +1291,15 @@ void ASTMangler::appendType(Type type, GenericSignature sig,
       return appendOperator("Bb");
     case TypeKind::BuiltinUnsafeValueBuffer:
       return appendOperator("BB");
+    case TypeKind::BuiltinUnboundGeneric:
+      llvm_unreachable("not a real type");
+    case TypeKind::BuiltinFixedArray: {
+      auto bfa = cast<BuiltinFixedArrayType>(tybase);
+      appendType(bfa->getSize(), sig, forDecl);
+      appendType(bfa->getElementType(), sig, forDecl);
+      return appendOperator("BV");
+    }
+    
     case TypeKind::SILToken:
       return appendOperator("Bt");
     case TypeKind::BuiltinVector:
@@ -1590,7 +1605,7 @@ void ASTMangler::appendType(Type type, GenericSignature sig,
       auto paramTy = cast<GenericTypeParamType>(tybase);
       // If this assertion fires, it probably means the type being mangled here
       // didn't go through getTypeForDWARFMangling().
-      assert(paramTy->getDecl() == nullptr &&
+      assert(paramTy->isCanonical() &&
              "cannot mangle non-canonical generic parameter");
       // A special mangling for the very first generic parameter. This shows up
       // frequently because it corresponds to 'Self' in protocol requirement
@@ -1664,6 +1679,20 @@ void ASTMangler::appendType(Type type, GenericSignature sig,
 
       return;
     }
+
+    case TypeKind::Integer: {
+      auto integer = cast<IntegerType>(tybase);
+
+      appendOperator("$");
+
+      if (integer->isNegative()) {
+        appendOperator("n");
+      }
+
+      appendOperator(integer->getDigitsText());
+      return;
+    }
+
     case TypeKind::SILMoveOnlyWrapped:
       // If we hit this, we just mangle the underlying name and move on.
       llvm_unreachable("should never be mangled?");
@@ -2139,6 +2168,9 @@ void ASTMangler::appendImplFunctionType(SILFunctionType *fn,
   case SILCoroutineKind::YieldOnce:
     OpArgs.push_back('A');
     break;
+  case SILCoroutineKind::YieldOnce2:
+    OpArgs.push_back('I');
+    break;
   case SILCoroutineKind::YieldMany:
     OpArgs.push_back('G');
     break;
@@ -2248,12 +2280,15 @@ void ASTMangler::appendOpaqueTypeArchetype(ArchetypeType *archetype,
 
     appendOperator("Qo", Index(genericParam->getIndex()));
   } else {
+    auto *env = archetype->getGenericEnvironment();
+    appendType(env->mapTypeIntoContext(interfaceType->getRootGenericParam()),
+               sig, forDecl);
+
     // Mangle associated types of opaque archetypes like dependent member
     // types, so that they can be accurately demangled at runtime.
-    appendType(Type(archetype->getRoot()), sig, forDecl);
     bool isAssocTypeAtDepth = false;
     appendAssocType(
-        archetype->getInterfaceType()->castTo<DependentMemberType>(),
+        interfaceType->castTo<DependentMemberType>(),
         sig, isAssocTypeAtDepth);
     appendOperator(isAssocTypeAtDepth ? "QX" : "Qx");
   }
@@ -2444,8 +2479,8 @@ void ASTMangler::appendContext(const DeclContext *ctx,
     }
     
     if (auto dtor = dyn_cast<DestructorDecl>(fn))
-      return appendDestructorEntity(dtor, /*deallocating*/ false);
-    
+      return appendDestructorEntity(dtor, DestructorKind::NonDeallocating);
+
     return appendEntity(fn);
   }
 
@@ -3247,10 +3282,6 @@ void ASTMangler::appendFunctionResultType(
   } else {
     appendType(resultType, sig, forDecl);
   }
-
-  if (AllowLifetimeDependencies && lifetimeDependence.has_value()) {
-    appendLifetimeDependence(*lifetimeDependence);
-  }
 }
 
 void ASTMangler::appendTypeList(Type listTy, GenericSignature sig,
@@ -3303,29 +3334,10 @@ void ASTMangler::appendParameterTypeListElement(
   if (flags.isCompileTimeConst())
     appendOperator("Yt");
 
-  if (AllowLifetimeDependencies && lifetimeDependence) {
-    appendLifetimeDependence(*lifetimeDependence);
-  }
-
   if (!name.empty())
     appendIdentifier(name.str());
   if (flags.isVariadic())
     appendOperator("d");
-}
-
-void ASTMangler::appendLifetimeDependence(LifetimeDependenceInfo info) {
-  if (auto *inheritIndices = info.getInheritIndices()) {
-    assert(!inheritIndices->isEmpty());
-    appendOperator("Yli");
-    appendIndexSubset(inheritIndices);
-    appendOperator("_");
-  }
-  if (auto *scopeIndices = info.getScopeIndices()) {
-    assert(!scopeIndices->isEmpty());
-    appendOperator("Yls");
-    appendIndexSubset(scopeIndices);
-    appendOperator("_");
-  }
 }
 
 void ASTMangler::appendTupleTypeListElement(Identifier name, Type elementType,
@@ -3752,10 +3764,12 @@ void ASTMangler::appendAssociatedTypeName(DependentMemberType *dmt,
 
 void ASTMangler::appendClosureEntity(
                               const SerializedAbstractClosureExpr *closure) {
-  assert(!closure->getType()->hasLocalArchetype() &&
+  auto canType = closure->getType()->getCanonicalType();
+  assert(!canType->hasLocalArchetype() &&
          "Not enough information here to handle this case");
 
-  appendClosureComponents(closure->getType(), closure->getDiscriminator(),
+  appendClosureComponents(canType,
+                          closure->getDiscriminator(),
                           closure->isImplicit(), closure->getParent(),
                           ArrayRef<GenericEnvironment *>());
 }
@@ -3769,17 +3783,18 @@ void ASTMangler::appendClosureEntity(const AbstractClosureExpr *closure) {
   // code; the type-checker currently isn't strict about producing typed
   // expression nodes when it fails. Once we enforce that, we can remove this.
   if (!type)
-    type = ErrorType::get(closure->getASTContext());
+    type = CanType(ErrorType::get(closure->getASTContext()));
 
-  if (type->hasLocalArchetype())
+  auto canType = type->getCanonicalType();
+  if (canType->hasLocalArchetype())
     capturedEnvs = closure->getCaptureInfo().getGenericEnvironments();
 
-  appendClosureComponents(type, closure->getDiscriminator(),
+  appendClosureComponents(canType, closure->getDiscriminator(),
                           isa<AutoClosureExpr>(closure), closure->getParent(),
                           capturedEnvs);
 }
 
-void ASTMangler::appendClosureComponents(Type Ty, unsigned discriminator,
+void ASTMangler::appendClosureComponents(CanType Ty, unsigned discriminator,
                                          bool isImplicit,
                                          const DeclContext *parentContext,
                                          ArrayRef<GenericEnvironment *> capturedEnvs) {
@@ -3790,12 +3805,10 @@ void ASTMangler::appendClosureComponents(Type Ty, unsigned discriminator,
   appendContext(parentContext, base, StringRef());
 
   auto Sig = parentContext->getGenericSignatureOfContext();
+  Ty = mapLocalArchetypesOutOfContext(Ty, Sig, capturedEnvs)
+      ->getCanonicalType();
 
-  Ty = Ty.subst(MapLocalArchetypesOutOfContext(Sig, capturedEnvs),
-                MakeAbstractConformanceForGenericType(),
-                SubstFlags::PreservePackExpansionLevel);
-
-  appendType(Ty->getCanonicalType(), Sig);
+  appendType(Ty, Sig);
   appendOperator(isImplicit ? "fu" : "fU", Index(discriminator));
 }
 
@@ -3949,10 +3962,20 @@ void ASTMangler::appendConstructorEntity(const ConstructorDecl *ctor,
 }
 
 void ASTMangler::appendDestructorEntity(const DestructorDecl *dtor,
-                                        bool isDeallocating) {
+                                        DestructorKind kind) {
   BaseEntitySignature base(dtor);
   appendContextOf(dtor, base);
-  appendOperator(isDeallocating ? "fD" : "fd");
+  switch (kind) {
+  case DestructorKind::NonDeallocating:
+    appendOperator("fd");
+    break;
+  case DestructorKind::Deallocating:
+    appendOperator("fD");
+    break;
+  case DestructorKind::IsolatedDeallocating:
+    appendOperator("fZ");
+    break;
+  }
 }
 
 void ASTMangler::appendAccessorEntity(StringRef accessorKindCode,
@@ -4197,12 +4220,26 @@ void ASTMangler::appendAnyProtocolConformance(
       conformance.getRequirement()->isMarkerProtocol())
     return;
 
+  // While all invertible protocols are marker protocols, do not mangle them
+  // as a dependent conformance. See `conformanceRequirementIndex` which skips
+  // these, too. In theory, invertible conformances should never be mangled,
+  // but we *might* have let that slip by for the other cases below, so the
+  // early-exits are highly conservative.
+  const bool forInvertible =
+      conformance.getRequirement()->getInvertibleProtocolKind().has_value();
+
   if (conformingType->isTypeParameter()) {
     assert(genericSig && "Need a generic signature to resolve conformance");
+    if (forInvertible)
+      return;
+
     auto path = genericSig->getConformancePath(conformingType,
                                                conformance.getAbstract());
     appendDependentProtocolConformance(path, genericSig);
   } else if (auto opaqueType = conformingType->getAs<OpaqueTypeArchetypeType>()) {
+    if (forInvertible)
+      return;
+
     GenericSignature opaqueSignature =
         opaqueType->getDecl()->getOpaqueInterfaceGenericSignature();
     ConformancePath conformancePath =
@@ -4718,8 +4755,7 @@ static void extractExistentialInverseRequirements(
 
   // Form a parameter referring to the existential's Self.
   auto existentialSelf =
-      GenericTypeParamType::get(/*isParameterPack=*/false,
-                                /*depth=*/0, /*index=*/0, ctx);
+      GenericTypeParamType::getType(/*depth=*/0, /*index=*/0, ctx);
 
   for (auto ip : PCT->getInverses()) {
     auto *proto = ctx.getProtocol(getKnownProtocolKind(ip));
@@ -4863,7 +4899,6 @@ ASTMangler::BaseEntitySignature::BaseEntitySignature(const Decl *decl)
     case DeclKind::Extension:
     case DeclKind::TopLevelCode:
     case DeclKind::Import:
-    case DeclKind::IfConfig:
     case DeclKind::PoundDiagnostic:
     case DeclKind::PrecedenceGroup:
     case DeclKind::Missing:

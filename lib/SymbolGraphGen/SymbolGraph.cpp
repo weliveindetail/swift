@@ -64,8 +64,9 @@ PrintOptions SymbolGraph::getDeclarationFragmentsPrintOptions() const {
   Opts.PrintFunctionRepresentationAttrs =
     PrintOptions::FunctionRepresentationMode::None;
   Opts.PrintUserInaccessibleAttrs = false;
-  Opts.SkipPrivateStdlibDecls = !Walker.Options.PrintPrivateStdlibSymbols;
-  Opts.SkipUnderscoredStdlibProtocols = !Walker.Options.PrintPrivateStdlibSymbols;
+  Opts.SkipPrivateSystemDecls = !Walker.Options.PrintPrivateSystemSymbols;
+  Opts.SkipUnderscoredSystemProtocols =
+      !Walker.Options.PrintPrivateSystemSymbols;
   Opts.PrintGenericRequirements = true;
   Opts.PrintInherited = false;
   Opts.ExplodeEnumCaseDecls = true;
@@ -464,7 +465,8 @@ void
 SymbolGraph::recordRequirementRelationships(Symbol S) {
   const auto VD = S.getSymbolDecl();
   if (const auto *Protocol = dyn_cast<ProtocolDecl>(VD->getDeclContext())) {
-    if (VD->isProtocolRequirement()) {
+    if (VD->isProtocolRequirement() &&
+        !VD->getAttrs().hasAttribute<OptionalAttr>()) {
       recordEdge(Symbol(this, VD, nullptr),
                  Symbol(this, Protocol, nullptr),
                  RelationshipKind::RequirementOf());
@@ -666,7 +668,7 @@ const ValueDecl *getProtocolRequirement(const ValueDecl *VD) {
 bool SymbolGraph::isImplicitlyPrivate(const Decl *D,
                                       bool IgnoreContext) const {
   // Don't record unconditionally private declarations
-  if (D->isPrivateStdlibDecl(/*treatNonBuiltinProtocolsAsPublic=*/false)) {
+  if (D->isPrivateSystemDecl(/*treatNonBuiltinProtocolsAsPublic=*/false)) {
     return true;
   }
 

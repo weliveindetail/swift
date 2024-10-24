@@ -754,6 +754,27 @@ public:
 
 void simple_display(llvm::raw_ostream &out, const KnownProtocolKind);
 
+/// Pretty-print the given declaration into a buffer and return a source
+/// location that refers to the declaration in that buffer.
+class PrettyPrintDeclRequest
+   : public SimpleRequest<PrettyPrintDeclRequest,
+                          SourceLoc(const Decl *),
+                          RequestFlags::Cached>
+{
+public:
+  using SimpleRequest::SimpleRequest;
+
+private:
+  friend SimpleRequest;
+
+  // Evaluation.
+  SourceLoc evaluate(Evaluator &eval, const Decl *d) const;
+
+public:
+  // Caching
+  bool isCached() const { return true; }
+};
+
 // Find the type in the cache or look it up
 class DefaultTypeRequest
     : public SimpleRequest<DefaultTypeRequest,
@@ -3029,9 +3050,9 @@ public:
   void cacheResult(ProtocolConformanceRef value) const;
 };
 
-class BraceHasReturnRequest
-    : public SimpleRequest<BraceHasReturnRequest, bool(const BraceStmt *),
-                           RequestFlags::Cached> {
+class BraceHasExplicitReturnStmtRequest
+    : public SimpleRequest<BraceHasExplicitReturnStmtRequest,
+                           bool(const BraceStmt *), RequestFlags::Cached> {
 public:
   using SimpleRequest::SimpleRequest;
 
@@ -3671,9 +3692,9 @@ public:
   void cacheResult(Type value) const;
 };
 
-class ResolveRawLayoutLikeTypeRequest
-    : public SimpleRequest<ResolveRawLayoutLikeTypeRequest,
-                           Type (StructDecl*, RawLayoutAttr *),
+class ResolveRawLayoutTypeRequest
+    : public SimpleRequest<ResolveRawLayoutTypeRequest,
+                           Type (StructDecl*, RawLayoutAttr *, bool),
                            RequestFlags::SeparatelyCached> {
 public:
   using SimpleRequest::SimpleRequest;
@@ -3684,7 +3705,8 @@ private:
   // Evaluation.
   Type evaluate(Evaluator &evaluator,
                 StructDecl *sd,
-                RawLayoutAttr *attr) const;
+                RawLayoutAttr *attr,
+                bool isLikeType) const;
 
 public:
   // Separate caching.
@@ -3904,6 +3926,25 @@ private:
 
 public:
   // Cached.
+  bool isCached() const { return true; }
+};
+
+/// Run effects checking for an initializer expression.
+class CheckInitEffectsRequest
+    : public SimpleRequest<CheckInitEffectsRequest,
+                           evaluator::SideEffect(Initializer *, Expr *),
+                           RequestFlags::Cached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+private:
+  friend SimpleRequest;
+
+  evaluator::SideEffect evaluate(Evaluator &evaluator,
+                                 Initializer *initCtx,
+                                 Expr *init) const;
+
+public:
   bool isCached() const { return true; }
 };
 
@@ -4157,6 +4198,29 @@ private:
   friend SimpleRequest;
 
   LabeledStmt *evaluate(Evaluator &evaluator, const ContinueStmt *CS) const;
+
+public:
+  bool isCached() const { return true; }
+};
+
+struct FallthroughSourceAndDest {
+  CaseStmt *Source;
+  CaseStmt *Dest;
+};
+
+/// Lookup the source and destination of a 'fallthrough'.
+class FallthroughSourceAndDestRequest
+    : public SimpleRequest<FallthroughSourceAndDestRequest,
+                           FallthroughSourceAndDest(const FallthroughStmt *),
+                           RequestFlags::Cached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+private:
+  friend SimpleRequest;
+
+  FallthroughSourceAndDest evaluate(Evaluator &evaluator,
+                                    const FallthroughStmt *FS) const;
 
 public:
   bool isCached() const { return true; }
@@ -4750,8 +4814,9 @@ void simple_display(llvm::raw_ostream &out, const TypeRepr *TyR);
 void simple_display(llvm::raw_ostream &out, ImplicitMemberAction action);
 
 /// Computes whether a module is part of the stdlib or contained within the
-/// SDK. If no SDK was specified, falls back to whether the module was
-/// specified as a system module (ie. it's on the system search path).
+/// SDK or the platform directory. If no SDK was specified, falls back to
+/// whether the module was specified as a system module (ie. it's on the system
+/// search path).
 class IsNonUserModuleRequest
     : public SimpleRequest<IsNonUserModuleRequest,
                            bool(ModuleDecl *),
@@ -4806,8 +4871,7 @@ public:
 /// Expand the children of the given type refinement context.
 class ExpandChildTypeRefinementContextsRequest
     : public SimpleRequest<ExpandChildTypeRefinementContextsRequest,
-                           std::vector<TypeRefinementContext *>(
-                               TypeRefinementContext *),
+                           evaluator::SideEffect(TypeRefinementContext *),
                            RequestFlags::SeparatelyCached> {
 public:
   using SimpleRequest::SimpleRequest;
@@ -4815,14 +4879,14 @@ public:
 private:
   friend SimpleRequest;
 
-  std::vector<TypeRefinementContext *>
-  evaluate(Evaluator &evaluator, TypeRefinementContext *parentTRC) const;
+  evaluator::SideEffect evaluate(Evaluator &evaluator,
+                                 TypeRefinementContext *parentTRC) const;
 
 public:
   // Separate caching.
   bool isCached() const { return true; }
-  std::optional<std::vector<TypeRefinementContext *>> getCachedResult() const;
-  void cacheResult(std::vector<TypeRefinementContext *> children) const;
+  std::optional<evaluator::SideEffect> getCachedResult() const;
+  void cacheResult(evaluator::SideEffect) const;
 };
 
 class SerializeAttrGenericSignatureRequest
@@ -5037,6 +5101,65 @@ private:
 
   bool evaluate(Evaluator &evaluator, NominalTypeDecl *decl,
                 KnownProtocolKind kp) const;
+
+public:
+  bool isCached() const { return true; }
+};
+
+struct RegexLiteralPatternInfo {
+  StringRef RegexToEmit;
+  Type RegexType;
+  size_t Version;
+};
+
+/// Parses the regex pattern for a given regex literal using the
+/// compiler's regex parsing library, and returns the resulting info.
+class RegexLiteralPatternInfoRequest
+    : public SimpleRequest<RegexLiteralPatternInfoRequest,
+                           RegexLiteralPatternInfo(const RegexLiteralExpr *),
+                           RequestFlags::Cached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+private:
+  friend SimpleRequest;
+
+  RegexLiteralPatternInfo evaluate(Evaluator &evaluator,
+                                   const RegexLiteralExpr *regex) const;
+
+public:
+  bool isCached() const { return true; }
+};
+
+class IsUnsafeRequest
+    : public SimpleRequest<IsUnsafeRequest,
+                           bool(Decl *decl),
+                           RequestFlags::SeparatelyCached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+private:
+  friend SimpleRequest;
+
+  bool evaluate(Evaluator &evaluator, Decl *decl) const;
+
+public:
+  bool isCached() const { return true; }
+  std::optional<bool> getCachedResult() const;
+  void cacheResult(bool value) const;
+};
+
+class GenericTypeParamDeclGetValueTypeRequest
+    : public SimpleRequest<GenericTypeParamDeclGetValueTypeRequest,
+                           Type(GenericTypeParamDecl *decl),
+                           RequestFlags::Cached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+private:
+  friend SimpleRequest;
+
+  Type evaluate(Evaluator &evaluator, GenericTypeParamDecl *decl) const;
 
 public:
   bool isCached() const { return true; }

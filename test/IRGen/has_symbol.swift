@@ -1,5 +1,5 @@
 // RUN: %empty-directory(%t)
-// RUN: %target-swift-frontend -emit-module -emit-module-path %t/has_symbol_helper.swiftmodule -parse-as-library %S/Inputs/has_symbol/has_symbol_helper.swift -enable-library-evolution -disable-availability-checking
+// RUN: %target-swift-frontend -emit-module -emit-module-path %t/has_symbol_helper.swiftmodule -parse-as-library %S/Inputs/has_symbol/has_symbol_helper.swift -enable-library-evolution -target %target-swift-5.1-abi-triple
 // RUN: %target-swift-frontend -emit-irgen %s -I %t -I %S/Inputs/has_symbol -module-name test | %FileCheck %s
 
 // UNSUPPORTED: OS=windows-msvc
@@ -165,8 +165,15 @@ public func testExistentialParameter(_ p: any P) {
 public func testMetatypes() {
   // CHECK: %{{[0-9]+}} = call i1 @"$s17has_symbol_helper1SVTwS"()
   if #_hasSymbol(S.self) {}
+
+  // CHECK: %{{[0-9]+}} = call i1 @"$s17has_symbol_helper7GenericVTwS"()
+  if #_hasSymbol(Generic<Void>.self) {}
 }
 
 // --- S.self ---
 // CHECK: define linkonce_odr hidden i1 @"$s17has_symbol_helper1SVTwS"()
 // CHECK:   ret i1 and (i1 and (i1 icmp ne (ptr @"$s17has_symbol_helper1SVMn", ptr null), i1 icmp ne (ptr @"$s17has_symbol_helper1SVN", ptr null)), i1 icmp ne (ptr @"$s17has_symbol_helper1SVMa", ptr null))
+
+// --- Generic<Void>.self ---
+// CHECK: define linkonce_odr hidden i1 @"$s17has_symbol_helper7GenericVTwS"()
+// CHECK:   ret i1 and (i1 icmp ne (ptr @"$s17has_symbol_helper7GenericVMn", ptr null), i1 icmp ne (ptr @"$s17has_symbol_helper7GenericVMa", ptr null))

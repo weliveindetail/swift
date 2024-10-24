@@ -509,7 +509,7 @@ void SILSerializer::writeSILFunction(const SILFunction &F, bool DeclOnly) {
   std::optional<llvm::VersionTuple> available;
   auto availability = F.getAvailabilityForLinkage();
   if (!availability.isAlwaysAvailable()) {
-    available = availability.getOSVersion().getLowerEndpoint();
+    available = availability.getRawMinimumVersion();
   }
   ENCODE_VER_TUPLE(available, available)
 
@@ -567,7 +567,7 @@ void SILSerializer::writeSILFunction(const SILFunction &F, bool DeclOnly) {
     }
     auto availability = SA->getAvailability();
     if (!availability.isAlwaysAvailable()) {
-      available = availability.getOSVersion().getLowerEndpoint();
+      available = availability.getRawMinimumVersion();
     }
     ENCODE_VER_TUPLE(available, available)
 
@@ -1973,6 +1973,20 @@ void SILSerializer::writeSILInstruction(const SILInstruction &SI) {
                        gaca.getFormalResumeType());
     break;
   }
+  case SILInstructionKind::ThunkInst: {
+    auto &ti = cast<ThunkInst>(SI);
+    auto operandType = ti.getOperand()->getType();
+    auto operandTypeRef = S.addTypeRef(operandType.getRawASTType());
+    auto operandRef = addValueRef(ti.getOperand());
+
+    SILThunkLayout::emitRecord(
+        Out, ScratchRecord, SILAbbrCodes[SILThunkLayout::Code],
+        unsigned(ti.getThunkKind()), operandTypeRef,
+        unsigned(operandType.getCategory()), operandRef,
+        S.addSubstitutionMapRef(ti.getSubstitutionMap()));
+    break;
+  }
+
   // Conversion instructions (and others of similar form).
 #define LOADABLE_REF_STORAGE(Name, ...) \
   case SILInstructionKind::RefTo##Name##Inst: \
@@ -2766,6 +2780,18 @@ void SILSerializer::writeSILInstruction(const SILInstruction &SI) {
         S.addDeclRef(decl), functionRefs);
     break;
   }
+
+  case SILInstructionKind::TypeValueInst: {
+    auto *tvi = cast<TypeValueInst>(&SI);
+    auto valueTy = tvi->getType();
+
+    SILTypeValueLayout::emitRecord(Out, ScratchRecord,
+                                   SILAbbrCodes[SILTypeValueLayout::Code],
+                                   S.addTypeRef(valueTy.getRawASTType()),
+                                   (unsigned)valueTy.getCategory(),
+                                   S.addTypeRef(tvi->getParamType()));
+    break;
+  }
   }
   // Non-void values get registered in the value table.
   for (auto result : SI.getResults()) {
@@ -3045,8 +3071,8 @@ void SILSerializer::writeSILWitnessTableEntry(
     return;
   }
 
-  if (entry.getKind() == SILWitnessTable::AssociatedTypeProtocol) {
-    auto &assoc = entry.getAssociatedTypeProtocolWitness();
+  if (entry.getKind() == SILWitnessTable::AssociatedConformance) {
+    auto &assoc = entry.getAssociatedConformanceWitness();
 
     auto requirementID = S.addTypeRef(assoc.Requirement);
     auto protocolID = S.addDeclRef(assoc.Protocol);
@@ -3224,6 +3250,8 @@ void SILSerializer::writeSILBlock(const SILModule *SILMod) {
   registerSILAbbr<SILOpenPackElementLayout>();
   registerSILAbbr<SILPackElementGetLayout>();
   registerSILAbbr<SILPackElementSetLayout>();
+  registerSILAbbr<SILTypeValueLayout>();
+  registerSILAbbr<SILThunkLayout>();
 
   registerSILAbbr<VTableLayout>();
   registerSILAbbr<VTableEntryLayout>();

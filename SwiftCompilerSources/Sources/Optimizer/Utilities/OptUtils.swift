@@ -10,9 +10,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-import ASTBridging
+import AST
 import SIL
 import OptimizerBridging
+
+// Default to SIL.Type within the Optimizer module.
+typealias Type = SIL.`Type`
 
 extension Value {
   var lookThroughBorrow: Value {
@@ -411,7 +414,7 @@ extension StoreInst {
     let builder = Builder(after: self, context)
     let type = source.type
     if type.isStruct {
-      if type.nominal.isStructWithUnreferenceableStorage {
+      if (type.nominal as! StructDecl).hasUnreferenceableStorage {
         return
       }
       if parentFunction.hasOwnership && source.ownership != .none {
@@ -465,7 +468,7 @@ extension LoadInst {
     var elements = [Value]()
     let builder = Builder(before: self, context)
     if type.isStruct {
-      if type.nominal.isStructWithUnreferenceableStorage {
+      if (type.nominal as! StructDecl).hasUnreferenceableStorage {
         return
       }
       guard let fields = type.getNominalFields(in: parentFunction) else {
@@ -647,27 +650,6 @@ extension Function {
 }
 
 extension FullApplySite {
-  var canInline: Bool {
-    // Some checks which are implemented in C++
-    if !FullApplySite_canInline(bridged) {
-      return false
-    }
-    // Cannot inline a non-inlinable function it an inlinable function.
-    if let calleeFunction = referencedFunction,
-       !calleeFunction.canBeInlinedIntoCaller(parentFunction.serializedKind) {
-      return false
-    }
-
-    // Cannot inline a non-ossa function into an ossa function
-    if parentFunction.hasOwnership,
-      let calleeFunction = referencedFunction,
-      !calleeFunction.hasOwnership {
-      return false
-    }
-
-    return true
-  }
-
   var inliningCanInvalidateStackNesting: Bool {
     guard let calleeFunction = referencedFunction else {
       return false
@@ -686,6 +668,10 @@ extension FullApplySite {
     }
     return false
   }
+}
+
+extension BeginApplyInst {
+  var canInline: Bool { BeginApply_canInline(bridged) }
 }
 
 extension GlobalVariable {

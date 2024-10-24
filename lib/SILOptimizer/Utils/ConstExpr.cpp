@@ -426,13 +426,14 @@ SymbolicValue ConstExprFunctionState::computeConstantValue(SILValue value) {
   // Try to resolve a witness method against our known conformances.
   if (auto *wmi = dyn_cast<WitnessMethodInst>(value)) {
     auto conf = substitutionMap.lookupConformance(
-        wmi->getLookupType(), wmi->getConformance().getRequirement());
+        wmi->getLookupType()->mapTypeOutOfContext()->getCanonicalType(),
+        wmi->getConformance().getRequirement());
     if (conf.isInvalid())
       return getUnknown(evaluator, value,
                         UnknownReason::UnknownWitnessMethodConformance);
     auto &module = wmi->getModule();
     SILFunction *fn =
-        module.lookUpFunctionInWitnessTable(conf, wmi->getMember(),
+        module.lookUpFunctionInWitnessTable(conf, wmi->getMember(), wmi->isSpecialized(),
             SILModule::LinkingMode::LinkAll).first;
     // If we were able to resolve it, then we can proceed.
     if (fn)

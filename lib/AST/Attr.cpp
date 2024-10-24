@@ -39,6 +39,7 @@
 using namespace swift;
 
 #define DECL_ATTR(_, Id, ...) \
+  static_assert(DeclAttrKind::Id <= DeclAttrKind::Last_DeclAttr); \
   static_assert(IsTriviallyDestructible<Id##Attr>::value, \
                 "Attrs are BumpPtrAllocated; the destructor is never called");
 #include "swift/AST/DeclAttr.def"
@@ -68,6 +69,10 @@ static_assert(DeclAttribute::isOptionSetFor##Id(DeclAttribute::DeclAttrOptions::
               DeclAttribute::isOptionSetFor##Id(DeclAttribute::DeclAttrOptions::APIStableToRemove),     \
               #Name " needs to specify either APIBreakingToRemove or APIStableToRemove");
 #include "swift/AST/DeclAttr.def"
+
+#define TYPE_ATTR(_, Id)                                                       \
+  static_assert(TypeAttrKind::Id <= TypeAttrKind::Last_TypeAttr);
+#include "swift/AST/TypeAttr.def"
 
 StringRef swift::getAccessLevelSpelling(AccessLevel value) {
   switch (value) {
@@ -973,6 +978,30 @@ static void printDifferentiableAttrArguments(
   printer << '(' << stream.str() << ')';
 }
 
+/// Returns the `PlatformKind` referenced by \p attr if applicable, or
+/// `std::nullopt` otherwise.
+static std::optional<PlatformKind>
+referencedPlatform(const DeclAttribute *attr) {
+  switch (attr->getKind()) {
+  case DeclAttrKind::Available:
+    return static_cast<const AvailableAttr *>(attr)->Platform;
+  case DeclAttrKind::BackDeployed:
+    return static_cast<const BackDeployedAttr *>(attr)->Platform;
+  case DeclAttrKind::OriginallyDefinedIn:
+    return static_cast<const OriginallyDefinedInAttr *>(attr)->Platform;
+  default:
+    return std::nullopt;
+  }
+}
+
+/// Returns true if \p attr contains a reference to a `PlatformKind` that should
+/// be considered SPI.
+static bool referencesSPIPlatform(const DeclAttribute *attr) {
+  if (auto platform = referencedPlatform(attr))
+    return isPlatformSPI(*platform);
+  return false;
+}
+
 void DeclAttributes::print(ASTPrinter &Printer, const PrintOptions &Options,
                            const Decl *D) const {
   if (!DeclAttrs)
@@ -995,6 +1024,8 @@ void DeclAttributes::print(ASTPrinter &Printer, const PrintOptions &Options,
   AttributeVector longAttributes;
   AttributeVector attributes;
   AttributeVector modifiers;
+  bool libraryLevelAPI =
+      D->getASTContext().LangOpts.LibraryLevel == LibraryLevel::API;
 
   for (auto DA : llvm::reverse(FlattenedAttrs)) {
     // Don't skip implicit custom attributes. Custom attributes like global
@@ -1007,7 +1038,13 @@ void DeclAttributes::print(ASTPrinter &Printer, const PrintOptions &Options,
     if (!Options.PrintUserInaccessibleAttrs &&
         DeclAttribute::isUserInaccessible(DA->getKind()))
       continue;
-    if (Options.excludeAttrKind(DA->getKind()))
+    if (Options.excludeAttr(DA))
+      continue;
+
+    // In the public interfaces of -library-level=api modules, skip attributes
+    // that reference SPI platforms.
+    if (Options.printPublicInterface() && libraryLevelAPI &&
+        referencesSPIPlatform(DA))
       continue;
 
     // If we're supposed to suppress expanded macros, check whether this is
@@ -1433,12 +1470,6 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options,
     if (Options.printPublicInterface() && !attr->getSPIGroups().empty())
       return false;
 
-    // Don't print the _specialize attribute if we are asked to skip the ones
-    // with availability parameters.
-    if (!Options.PrintSpecializeAttributeWithAvailability &&
-        !attr->getAvailableAttrs().empty())
-      return false;
-
     Printer << "@" << getAttrName() << "(";
     auto exported = attr->isExported() ? "true" : "false";
     auto kind = attr->isPartialSpecialization() ? "partial" : "full";
@@ -1746,7 +1777,8 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options,
     } else if (auto array = attr->getArrayLikeTypeAndCount()) {
       Printer << "likeArrayOf: ";
       array->first->print(Printer, Options);
-      Printer << ", count: " << array->second;
+      Printer << ", count: ";
+      array->second->print(Printer, Options);
     } else {
       llvm_unreachable("unhandled @_rawLayout form");
     }
@@ -1777,6 +1809,12 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options,
       interleave(accesses, Printer, ", ");
     }
     Printer << ")";
+    break;
+  }
+
+  case DeclAttrKind::Lifetime: {
+    auto *attr = cast<LifetimeAttr>(this);
+    Printer << attr->getLifetimeEntry()->getString();
     break;
   }
 
@@ -1978,6 +2016,8 @@ StringRef DeclAttribute::getAttrName() const {
     } else {
       return "_allowFeatureSuppression";
     }
+  case DeclAttrKind::Lifetime:
+    return "lifetime";
   }
   llvm_unreachable("bad DeclAttrKind");
 }
@@ -2188,8 +2228,18 @@ Type TypeEraserAttr::getResolvedType(const ProtocolDecl *PD) const {
 Type RawLayoutAttr::getResolvedLikeType(StructDecl *sd) const {
   auto &ctx = sd->getASTContext();
   return evaluateOrDefault(ctx.evaluator,
-                           ResolveRawLayoutLikeTypeRequest{sd,
-                               const_cast<RawLayoutAttr *>(this)},
+                           ResolveRawLayoutTypeRequest{sd,
+                              const_cast<RawLayoutAttr *>(this),
+                              /*isLikeType*/ true},
+                           ErrorType::get(ctx));
+}
+
+Type RawLayoutAttr::getResolvedCountType(StructDecl *sd) const {
+  auto &ctx = sd->getASTContext();
+  return evaluateOrDefault(ctx.evaluator,
+                           ResolveRawLayoutTypeRequest{sd,
+                              const_cast<RawLayoutAttr *>(this),
+                              /*isLikeType*/ false},
                            ErrorType::get(ctx));
 }
 
@@ -2995,6 +3045,12 @@ AllowFeatureSuppressionAttr *AllowFeatureSuppressionAttr::create(
   auto *mem = ctx.Allocate(size, alignof(AllowFeatureSuppressionAttr));
   return new (mem)
       AllowFeatureSuppressionAttr(atLoc, range, implicit, inverted, features);
+}
+
+LifetimeAttr *LifetimeAttr::create(ASTContext &context, SourceLoc atLoc,
+                                   SourceRange baseRange, bool implicit,
+                                   LifetimeEntry *entry) {
+  return new (context) LifetimeAttr(atLoc, baseRange, implicit, entry);
 }
 
 void swift::simple_display(llvm::raw_ostream &out, const DeclAttribute *attr) {

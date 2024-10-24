@@ -23,6 +23,7 @@
 #include "swift/AST/Decl.h"
 #include "swift/AST/GenericSignature.h"
 #include "swift/AST/ProtocolConformanceRef.h"
+#include "swift/AST/SILThunkKind.h"
 #include "swift/AST/SubstitutionMap.h"
 #include "swift/AST/TypeAlignments.h"
 #include "swift/Basic/Compiler.h"
@@ -722,8 +723,8 @@ public:
   /// Run the given function for each local archetype this instruction
   /// defines, passing the value that should be used to record the
   /// dependency.
-  void forEachDefinedLocalArchetype(
-      llvm::function_ref<void(CanLocalArchetypeType archetype,
+  void forEachDefinedLocalEnvironment(
+      llvm::function_ref<void(GenericEnvironment *genericEnv,
                               SILValue typeDependency)> function) const;
   bool definesLocalArchetypes() const;
 
@@ -846,6 +847,9 @@ public:
   /// allocated memory. In this case there must be an adjacent deallocating
   /// instruction.
   bool isAllocatingStack() const;
+
+  /// The stack allocation produced by the instruction, if any.
+  SILValue getStackAllocation() const;
 
   /// Returns true if this is the deallocation of a stack allocating instruction.
   /// The first operand must be the allocating instruction.
@@ -3251,13 +3255,25 @@ class BeginApplyInst final
 public:
   using MultipleValueInstructionTrailingObjects::totalSizeToAlloc;
 
+  bool isCalleeAllocated() const {
+    return getSubstCalleeType()->isCalleeAllocatedCoroutine();
+  }
+
   MultipleValueInstructionResult *getTokenResult() const {
+    return const_cast<MultipleValueInstructionResult *>(
+        &getAllResultsBuffer().drop_back(isCalleeAllocated() ? 1 : 0).back());
+  }
+
+  MultipleValueInstructionResult *getCalleeAllocationResult() const {
+    if (!isCalleeAllocated()) {
+      return nullptr;
+    }
     return const_cast<MultipleValueInstructionResult *>(
              &getAllResultsBuffer().back());
   }
 
   SILInstructionResultArray getYieldedValues() const {
-    return getAllResultsBuffer().drop_back();
+    return getAllResultsBuffer().drop_back(isCalleeAllocated() ? 2 : 1);
   }
 
   void getCoroutineEndPoints(
@@ -5868,6 +5884,44 @@ public:
   bool onlyConvertsSendable() const;
 };
 
+class ThunkInst final
+    : public UnaryInstructionWithTypeDependentOperandsBase<
+          SILInstructionKind::ThunkInst, ThunkInst, SingleValueInstruction> {
+public:
+  using Kind = SILThunkKind;
+
+  /// The type of thunk we are supposed to produce.
+  Kind kind;
+
+  /// The substitutions being applied to the callee when we generate thunks for
+  /// it. E.x.: if we generate a partial_apply, this will be the substitution
+  /// map used to generate the partial_apply.
+  SubstitutionMap substitutions;
+
+private:
+  friend SILBuilder;
+
+  ThunkInst(SILDebugLocation debugLoc, SILValue operand,
+            ArrayRef<SILValue> typeDependentOperands, SILType outputType,
+            Kind kind, SubstitutionMap subs)
+      : UnaryInstructionWithTypeDependentOperandsBase(
+            debugLoc, operand, typeDependentOperands, outputType),
+        kind(kind), substitutions(subs) {}
+
+  static ThunkInst *create(SILDebugLocation debugLoc, SILValue operand,
+                           SILModule &mod, SILFunction *func, Kind kind,
+                           SubstitutionMap subs);
+
+public:
+  Kind getThunkKind() const { return kind; }
+
+  SubstitutionMap getSubstitutionMap() const { return substitutions; }
+
+  CanSILFunctionType getOrigCalleeType() const {
+    return getOperand()->getType().castTo<SILFunctionType>();
+  }
+};
+
 /// ConvertEscapeToNoEscapeInst - Change the type of a escaping function value
 /// to a trivial function type (@noescape T -> U).
 class ConvertEscapeToNoEscapeInst final
@@ -7643,6 +7697,13 @@ public:
     return getMember().getDecl()->getDeclContext()->getSelfProtocolDecl();
   }
 
+  // Returns true if it's expected that the witness method is looked up up from
+  // a specialized witness table.
+  // This is the case in Embedded Swift.
+  bool isSpecialized() const {
+    return !getType().castTo<SILFunctionType>()->isPolymorphic();
+  }
+
   ProtocolConformanceRef getConformance() const { return Conformance; }
 };
 
@@ -8194,8 +8255,8 @@ class OpenPackElementInst final
 public:
   /// Call the given function for each element archetype that this
   /// instruction opens.
-  void forEachDefinedLocalArchetype(
-      llvm::function_ref<void(CanLocalArchetypeType, SILValue)> fn) const;
+  void forEachDefinedLocalEnvironment(
+      llvm::function_ref<void(GenericEnvironment *, SILValue)> fn) const;
 
   GenericEnvironment *getOpenedGenericEnvironment() const {
     return Env;
@@ -8486,6 +8547,7 @@ class StrongRetainInst
   StrongRetainInst(SILDebugLocation DebugLoc, SILValue Operand,
                    Atomicity atomicity)
       : UnaryInstructionBase(DebugLoc, Operand) {
+    assert(!Operand->getType().getAs<BuiltinFixedArrayType>());
     setAtomicity(atomicity);
   }
 };
@@ -11537,6 +11599,40 @@ public:
          ValueOwnershipKind forwardingOwnershipKind);
   static bool classof(SILNodePointer node) {
     return node->getKind() == SILNodeKind::DestructureTupleInst;
+  }
+};
+
+/// Instruction that takes a value generic parameter type and produces a value
+/// of the underlying parameter type.
+///
+/// E.g. type_value $Int for let N produces an Int value from the let N type.
+class TypeValueInst final
+    : public NullaryInstructionWithTypeDependentOperandsBase<
+                                              SILInstructionKind::TypeValueInst,
+                                              TypeValueInst,
+                                              SingleValueInstruction> {
+  friend TrailingObjects;
+  friend SILBuilder;
+
+  CanType ParamType;
+
+  TypeValueInst(SILDebugLocation loc,
+                ArrayRef<SILValue> typeDependentOperands,
+                SILType valueType,
+                CanType paramType)
+    : NullaryInstructionWithTypeDependentOperandsBase(loc,
+                                                      typeDependentOperands,
+                                                      valueType),
+      ParamType(paramType) {}
+
+  static TypeValueInst *create(SILFunction &parent,
+                               SILDebugLocation loc,
+                               SILType valueType,
+                               CanType paramType);
+public:
+  /// Return the parameter type that defined this value.
+  CanType getParamType() const {
+    return ParamType;
   }
 };
 

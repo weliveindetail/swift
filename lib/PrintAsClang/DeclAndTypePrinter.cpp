@@ -12,6 +12,7 @@
 
 #include "DeclAndTypePrinter.h"
 #include "ClangSyntaxPrinter.h"
+#include "OutputLanguageMode.h"
 #include "PrimitiveTypeMapping.h"
 #include "PrintClangClassType.h"
 #include "PrintClangFunction.h"
@@ -23,6 +24,7 @@
 #include "swift/AST/ASTVisitor.h"
 #include "swift/AST/ClangSwiftTypeCorrespondence.h"
 #include "swift/AST/Comment.h"
+#include "swift/AST/ConformanceLookup.h"
 #include "swift/AST/Decl.h"
 #include "swift/AST/ExistentialLayout.h"
 #include "swift/AST/ForeignAsyncConvention.h"
@@ -32,6 +34,7 @@
 #include "swift/AST/SwiftNameTranslation.h"
 #include "swift/AST/TypeCheckRequests.h"
 #include "swift/AST/TypeVisitor.h"
+#include "swift/AST/Types.h"
 #include "swift/Basic/Assertions.h"
 #include "swift/IDE/CommentConversion.h"
 #include "swift/IRGen/IRABIDetailsProvider.h"
@@ -46,6 +49,7 @@
 #include "clang/AST/DeclObjC.h"
 #include "clang/Basic/CharInfo.h"
 #include "clang/Basic/SourceManager.h"
+#include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
 
 using namespace swift;
@@ -234,14 +238,33 @@ private:
     os << ">";
   }
 
+  void printUsingForNestedType(const NominalTypeDecl *TD,
+                               const ModuleDecl *moduleContext) {
+    if (TD->isImplicit() || TD->isSynthesized())
+      return;
+    os << "  using ";
+    ClangSyntaxPrinter(os).printBaseName(TD);
+    os << "=";
+    ClangSyntaxPrinter(os).printNominalTypeReference(TD, moduleContext);
+    os << ";\n";
+  }
+
   /// Prints the members of a class, extension, or protocol.
   template <bool AllowDelayed = false, typename R>
   void printMembers(R &&members) {
     CxxEmissionScopeRAII cxxScopeRAII(owningPrinter);
-    // FIXME: Actually track emitted members in nested
-    // lexical scopes.
-    // FIXME: Emit unavailable C++ decls for not emitted
-    // nested members.
+    // Using statements for nested types.
+    if (outputLang == OutputLanguageMode::Cxx) {
+      for (const Decl *member : members) {
+        if (member->getModuleContext()->isStdlibModule())
+          break;
+        // TODO: support nested classes.
+        if (isa<ClassDecl>(member))
+          continue;
+        if (const auto *TD = dyn_cast<NominalTypeDecl>(member))
+          printUsingForNestedType(TD, TD->getModuleContext());
+      }
+    }
     bool protocolMembersOptional = false;
     for (const Decl *member : members) {
       auto VD = dyn_cast<ValueDecl>(member);
@@ -403,10 +426,7 @@ private:
       os << "\n";
     os << "@interface " << getNameForObjC(baseClass);
     maybePrintObjCGenericParameters(baseClass);
-    if (ED->getObjCCategoryName().empty())
-      os << " (SWIFT_EXTENSION(" << ED->getModuleContext()->getName() << "))";
-    else
-      os << " (" << ED->getObjCCategoryName() << ")";
+    os << " (SWIFT_EXTENSION(" << ED->getModuleContext()->getName() << "))";
     printProtocols(ED->getLocalProtocols(ConformanceLookupKind::OnlyExplicit));
     os << "\n";
     printMembers(ED->getMembers());
@@ -1027,6 +1047,7 @@ private:
     auto result = methodTy->getResult();
     if (result->isUninhabited())
       return getASTContext().TheEmptyTupleType;
+
     return result;
   }
 
@@ -1474,8 +1495,6 @@ private:
       StringRef comment = "") {
     std::string cRepresentationString;
     llvm::raw_string_ostream cRepresentationOS(cRepresentationString);
-    cRepresentationOS << "SWIFT_EXTERN ";
-
     DeclAndTypeClangFunctionPrinter funcPrinter(
         cRepresentationOS, owningPrinter.prologueOS, owningPrinter.typeMapping,
         owningPrinter.interopContext, owningPrinter);
@@ -1509,6 +1528,8 @@ private:
       FD->getName().print(os);
     }
     os << "\n";
+    if (representation.isObjCxxOnly())
+      os << "#endif\n";
     return representation;
   }
 
@@ -1617,6 +1638,8 @@ private:
         /*typeDeclContext=*/nullptr, FD->getModuleContext(), resultTy,
         FD->getParameters(), funcTy->isThrowing(), funcTy);
     os << "}\n";
+    if (result.isObjCxxOnly())
+      os << "#endif\n";
   }
 
   enum class PrintLeadingSpace : bool {
@@ -1964,7 +1987,7 @@ private:
       }
 
       auto nominal = copyTy->getNominalOrBoundGenericNominal();
-      if (nominal && isa<StructDecl>(nominal)) {
+      if (isa_and_nonnull<StructDecl>(nominal)) {
         if (copyTy->isArray() ||
             copyTy->isDictionary() ||
             copyTy->isSet() ||
@@ -2069,9 +2092,10 @@ private:
     if (outputLang == OutputLanguageMode::Cxx) {
       if (!SD->isInstanceMember())
         return;
-      auto *getter = SD->getOpaqueAccessor(AccessorKind::Get);
-      printAbstractFunctionAsMethod(getter, false,
-                                    /*isNSUIntegerSubscript=*/false, SD);
+      // TODO: support read accessors.
+      if (auto *getter = SD->getOpaqueAccessor(AccessorKind::Get))
+        printAbstractFunctionAsMethod(getter, false,
+                                      /*isNSUIntegerSubscript=*/false, SD);
       return;
     }
     assert(SD->isInstanceMember() && "static subscripts not supported");
@@ -2136,16 +2160,16 @@ public:
     auto proto = ctx.getProtocol(KnownProtocolKind::ObjectiveCBridgeable);
     if (!proto) return nullptr;
 
+    auto declaredType = nominal->getDeclaredInterfaceType();
+
     // Determine whether this nominal type is _ObjectiveCBridgeable.
-    SmallVector<ProtocolConformance *, 2> conformances;
-    if (!nominal->lookupConformance(proto, conformances))
+    auto conformance = lookupConformance(declaredType, proto);
+    if (!conformance)
       return nullptr;
 
     // Dig out the Objective-C type.
-    auto conformance = conformances.front();
-    Type objcType = ProtocolConformanceRef(conformance).getTypeWitnessByName(
-                                           nominal->getDeclaredType(),
-                                           ctx.Id_ObjectiveCType);
+    Type objcType = conformance.getTypeWitnessByName(
+        declaredType, ctx.Id_ObjectiveCType);
 
     // Dig out the Objective-C class.
     return objcType->getClassOrBoundGenericClass();
@@ -2795,7 +2819,8 @@ static bool isAsyncAlternativeOfOtherDecl(const ValueDecl *VD) {
   return false;
 }
 
-static bool isStringNestedType(const ValueDecl *VD, StringRef Typename) {
+namespace swift {
+bool isStringNestedType(const ValueDecl *VD, StringRef Typename) {
   auto ctx = VD->getDeclContext();
   return VD->hasName() && VD->getName().isSimpleName() &&
          VD->getBaseIdentifier().str() == Typename &&
@@ -2803,6 +2828,7 @@ static bool isStringNestedType(const ValueDecl *VD, StringRef Typename) {
          cast<ExtensionDecl>(ctx->getAsDecl())->getExtendedNominal() ==
              VD->getASTContext().getStringDecl();
 }
+} // namespace swift
 
 static bool hasExposeAttr(const ValueDecl *VD) {
   if (isa<NominalTypeDecl>(VD) && VD->getModuleContext()->isStdlibModule()) {
@@ -2960,8 +2986,9 @@ void DeclAndTypePrinter::print(const Decl *D) {
   getImpl().print(D);
 }
 
-void DeclAndTypePrinter::print(Type ty) {
-  getImpl().print(ty, /*overridingOptionality*/ std::nullopt);
+void DeclAndTypePrinter::print(
+    Type ty, std::optional<OptionalTypeKind> overrideOptionalTypeKind) {
+  getImpl().print(ty, overrideOptionalTypeKind);
 }
 
 void DeclAndTypePrinter::printTypeName(raw_ostream &os, Type ty,

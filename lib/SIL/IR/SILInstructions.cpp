@@ -14,11 +14,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "swift/AST/ASTMangler.h"
 #include "swift/AST/ExistentialLayout.h"
 #include "swift/AST/Expr.h"
 #include "swift/AST/ProtocolConformance.h"
-#include "swift/Basic/Assertions.h"
 #include "swift/Basic/AssertImplements.h"
+#include "swift/Basic/Assertions.h"
 #include "swift/Basic/Unicode.h"
 #include "swift/Basic/type_traits.h"
 #include "swift/SIL/DynamicCasts.h"
@@ -47,7 +48,7 @@ static void *allocateTrailingInst(SILFunction &F, CountTypes... counts) {
 
 namespace {
 class TypeDependentOperandCollector {
-  SmallVector<CanLocalArchetypeType, 4> rootLocalArchetypes;
+  SmallVector<GenericEnvironment *, 4> genericEnvs;
   bool hasDynamicSelf = false;
 public:
   void collect(CanType type);
@@ -86,15 +87,15 @@ void TypeDependentOperandCollector::collect(CanType type) {
     return;
   type.visit([&](CanType t) {
     if (const auto local = dyn_cast<LocalArchetypeType>(t)) {
-      const auto root = local.getRoot();
+      auto *genericEnv = local->getGenericEnvironment();
 
-      // Add this root local archetype if it was not seen yet.
+      // Add this local archetype's environment if it was not seen yet.
       // We don't use a set here, because the number of open archetypes
       // is usually very small and using a real set may introduce too
       // much overhead.
-      if (std::find(rootLocalArchetypes.begin(), rootLocalArchetypes.end(),
-                    root) == rootLocalArchetypes.end())
-        rootLocalArchetypes.push_back(root);
+      if (std::find(genericEnvs.begin(), genericEnvs.end(),
+                    genericEnv) == genericEnvs.end())
+        genericEnvs.push_back(genericEnv);
     }
   });
 }
@@ -113,20 +114,11 @@ void TypeDependentOperandCollector::collect(SubstitutionMap subs) {
 /// for those dependencies to the given vector.
 void TypeDependentOperandCollector::addTo(SmallVectorImpl<SILValue> &operands,
                                           SILFunction &F) {
-  size_t firstArchetypeOperand = operands.size();
-  for (CanLocalArchetypeType archetype : rootLocalArchetypes) {
-    SILValue def = F.getModule().getRootLocalArchetypeDef(archetype, &F);
+  for (GenericEnvironment *genericEnv : genericEnvs) {
+    SILValue def = F.getModule().getLocalGenericEnvironmentDef(genericEnv, &F);
     assert(def->getFunction() == &F &&
-           "def of root local archetype is in wrong function");
-
-    // The archetypes in rootLocalArchetypes have already been uniqued,
-    // but a single instruction can open multiple archetypes (e.g.
-    // open_pack_element), so we also unique the actual operand values.
-    // As above, we assume there are very few values in practice and so
-    // a linear scan is better than maintaining a set.
-    if (std::find(operands.begin() + firstArchetypeOperand, operands.end(),
-                  def) == operands.end())
-      operands.push_back(def);
+           "def of local environment is in wrong function");
+    operands.push_back(def);
   }
   if (hasDynamicSelf)
     operands.push_back(F.getDynamicSelfMetadata());
@@ -673,13 +665,18 @@ BeginApplyInst *BeginApplyInst::create(
             : SILModuleConventions(parentFunction.getModule())));
   }
 
-  resultTypes.push_back(
-      SILType::getSILTokenType(parentFunction.getASTContext()));
+  auto tokenTy = SILType::getSILTokenType(parentFunction.getASTContext());
+  resultTypes.push_back(tokenTy);
   // The begin_apply token represents the borrow scope of all owned and
   // guaranteed call arguments. Although SILToken is (currently) trivially
   // typed, it must have guaranteed ownership so end_apply and abort_apply will
   // be recognized as lifetime-ending uses.
   resultOwnerships.push_back(OwnershipKind::Guaranteed);
+
+  if (substCalleeType->isCalleeAllocatedCoroutine()) {
+    resultTypes.push_back(tokenTy.getAddressType());
+    resultOwnerships.push_back(OwnershipKind::None);
+  }
 
   SmallVector<SILValue, 32> typeDependentOperands;
   collectTypeDependentOperands(typeDependentOperands, parentFunction,
@@ -2824,6 +2821,126 @@ bool ConvertFunctionInst::onlyConvertsSendable() const {
          getNonSendableFuncType(getType());
 }
 
+static CanSILFunctionType getDerivedFunctionTypeForHopToMainActorIfNeeded(
+    SILFunction *fn, CanSILFunctionType inputFunctionType,
+    SubstitutionMap subMap) {
+  inputFunctionType = inputFunctionType->substGenericArgs(
+      fn->getModule(), subMap, fn->getTypeExpansionContext());
+  bool needsSubstFunctionType = false;
+  for (auto param : inputFunctionType->getParameters()) {
+    needsSubstFunctionType |= param.getInterfaceType()->hasTypeParameter();
+  }
+  for (auto result : inputFunctionType->getResults()) {
+    needsSubstFunctionType |= result.getInterfaceType()->hasTypeParameter();
+  }
+  for (auto yield : inputFunctionType->getYields()) {
+    needsSubstFunctionType |= yield.getInterfaceType()->hasTypeParameter();
+  }
+
+  SubstitutionMap appliedSubs;
+  if (needsSubstFunctionType) {
+    appliedSubs = inputFunctionType->getCombinedSubstitutions();
+  }
+
+  auto extInfoBuilder =
+      inputFunctionType->getExtInfo()
+          .intoBuilder()
+          .withRepresentation(SILFunctionType::Representation::Thick)
+          .withIsPseudogeneric(false);
+
+  return SILFunctionType::get(
+      nullptr, extInfoBuilder.build(), inputFunctionType->getCoroutineKind(),
+      ParameterConvention::Direct_Guaranteed,
+      inputFunctionType->getParameters(), inputFunctionType->getYields(),
+      inputFunctionType->getResults(),
+      inputFunctionType->getOptionalErrorResult(), appliedSubs,
+      SubstitutionMap(), inputFunctionType->getASTContext());
+}
+
+static CanSILFunctionType
+getDerivedFunctionTypeForIdentityThunk(SILFunction *fn,
+                                       CanSILFunctionType inputFunctionType,
+                                       SubstitutionMap subMap) {
+  inputFunctionType = inputFunctionType->substGenericArgs(
+      fn->getModule(), subMap, fn->getTypeExpansionContext());
+  bool needsSubstFunctionType = false;
+  for (auto param : inputFunctionType->getParameters()) {
+    needsSubstFunctionType |= param.getInterfaceType()->hasTypeParameter();
+  }
+  for (auto result : inputFunctionType->getResults()) {
+    needsSubstFunctionType |= result.getInterfaceType()->hasTypeParameter();
+  }
+  for (auto yield : inputFunctionType->getYields()) {
+    needsSubstFunctionType |= yield.getInterfaceType()->hasTypeParameter();
+  }
+  if (inputFunctionType->hasErrorResult()) {
+    needsSubstFunctionType |= inputFunctionType->getErrorResult()
+                                  .getInterfaceType()
+                                  ->hasTypeParameter();
+  }
+
+  SubstitutionMap appliedSubs;
+  if (needsSubstFunctionType) {
+    appliedSubs = inputFunctionType->getCombinedSubstitutions();
+  }
+
+  auto extInfoBuilder =
+      inputFunctionType->getExtInfo()
+          .intoBuilder()
+          .withRepresentation(SILFunctionType::Representation::Thick)
+          .withIsPseudogeneric(false);
+
+  return SILFunctionType::get(
+      nullptr, extInfoBuilder.build(), inputFunctionType->getCoroutineKind(),
+      ParameterConvention::Direct_Guaranteed,
+      inputFunctionType->getParameters(), inputFunctionType->getYields(),
+      inputFunctionType->getResults(),
+      inputFunctionType->getOptionalErrorResult(), appliedSubs,
+      SubstitutionMap(), inputFunctionType->getASTContext());
+}
+
+CanSILFunctionType
+ThunkInst::Kind::getDerivedFunctionType(SILFunction *fn,
+                                        CanSILFunctionType inputFunctionType,
+                                        SubstitutionMap subMap) const {
+  switch (innerTy) {
+  case Invalid:
+    return CanSILFunctionType();
+  case Identity:
+    return getDerivedFunctionTypeForIdentityThunk(fn, inputFunctionType,
+                                                  subMap);
+  case HopToMainActorIfNeeded:
+    return getDerivedFunctionTypeForHopToMainActorIfNeeded(
+        fn, inputFunctionType, subMap);
+  }
+
+  llvm_unreachable("Covered switch isn't covered?!");
+}
+
+SILType ThunkInst::Kind::getDerivedFunctionType(SILFunction *fn,
+                                                SILType inputFunctionType,
+                                                SubstitutionMap subMap) const {
+  auto fType = inputFunctionType.castTo<SILFunctionType>();
+  return SILType::getPrimitiveType(getDerivedFunctionType(fn, fType, subMap),
+                                   inputFunctionType.getCategory());
+}
+
+ThunkInst *ThunkInst::create(SILDebugLocation debugLoc, SILValue operand,
+                             SILModule &mod, SILFunction *f,
+                             ThunkInst::Kind kind, SubstitutionMap subs) {
+  SILType resultType = kind.getDerivedFunctionType(f, operand->getType(), subs);
+  SmallVector<SILValue, 8> typeDependentOperands;
+  if (f) {
+    assert(&f->getModule() == &mod);
+    collectTypeDependentOperands(typeDependentOperands, *f, resultType);
+  }
+  unsigned size =
+      totalSizeToAlloc<swift::Operand>(1 + typeDependentOperands.size());
+  void *Buffer = mod.allocateInst(size, alignof(ThunkInst));
+  return ::new (Buffer) ThunkInst(debugLoc, operand, typeDependentOperands,
+                                  resultType, kind, subs);
+}
+
 ConvertEscapeToNoEscapeInst *ConvertEscapeToNoEscapeInst::create(
     SILDebugLocation DebugLoc, SILValue Operand, SILType Ty, SILFunction &F,
     bool isLifetimeGuaranteed) {
@@ -3405,4 +3522,17 @@ void HasSymbolInst::getReferencedFunctions(
     assert(fn);
     fns.push_back(fn);
   });
+}
+
+TypeValueInst *TypeValueInst::create(SILFunction &F, SILDebugLocation loc,
+                                     SILType valueType, CanType paramType) {
+  SmallVector<SILValue, 8> typeDependentOperands;
+  collectTypeDependentOperands(typeDependentOperands, F, paramType);
+
+  size_t size =
+    totalSizeToAlloc<swift::Operand>(typeDependentOperands.size());
+  void *buffer =
+    F.getModule().allocateInst(size, alignof(TypeValueInst));
+  return ::new (buffer)
+      TypeValueInst(loc, typeDependentOperands, valueType, paramType);
 }

@@ -180,6 +180,7 @@ DeclName SILGenModule::getMagicFunctionName(SILDeclRef ref) {
   case SILDeclRef::Kind::Allocator:
     return getMagicFunctionName(cast<ConstructorDecl>(ref.getDecl()));
   case SILDeclRef::Kind::Deallocator:
+  case SILDeclRef::Kind::IsolatedDeallocator:
   case SILDeclRef::Kind::Destroyer:
     return getMagicFunctionName(cast<DestructorDecl>(ref.getDecl()));
   case SILDeclRef::Kind::GlobalAccessor:
@@ -1074,6 +1075,49 @@ SILGenFunction::emitClosureValue(SILLocation loc, SILDeclRef constant,
         resultType = resultType->getWithExtInfo(extInfo);
         result = B.createConvertFunction(
             loc, result, SILType::getPrimitiveObjectType(resultType));
+      }
+    }
+  }
+
+  // If GenerateForceToMainActorThunks and Dynamic Actor Isolation Checking is
+  // enabled and we have a synchronous function...
+  if (F.getASTContext().LangOpts.hasFeature(
+          Feature::GenerateForceToMainActorThunks) &&
+      F.getASTContext().LangOpts.isDynamicActorIsolationCheckingEnabled() &&
+      !functionTy.castTo<SILFunctionType>()->isAsync()) {
+
+    // See if that function is a closure which requires dynamic isolation
+    // checking that doesn't take any parameters or results. In such a case, we
+    // create a hop to main actor if needed thunk.
+    if (auto *closureExpr = constant.getClosureExpr()) {
+      if (closureExpr->requiresDynamicIsolationChecking()) {
+        auto actorIsolation = closureExpr->getActorIsolation();
+        switch (actorIsolation) {
+        case ActorIsolation::Unspecified:
+        case ActorIsolation::Nonisolated:
+        case ActorIsolation::NonisolatedUnsafe:
+        case ActorIsolation::ActorInstance:
+          break;
+
+        case ActorIsolation::Erased:
+          llvm_unreachable("closure cannot have erased isolation");
+
+        case ActorIsolation::GlobalActor:
+          // For now only do this if we are using the main actor and are calling
+          // a function that doesn't depend on its result and doesn't have any
+          // parameters.
+          //
+          // NOTE: Since errors are results, this means that we cannot do this
+          // for throwing functions.
+          if (auto *args = closureExpr->getArgs();
+              (!args || args->empty()) && actorIsolation.isMainActor() &&
+              closureExpr->getResultType()->getCanonicalType() ==
+                  B.getASTContext().TheEmptyTupleType &&
+              !result.getType().castTo<SILFunctionType>()->hasErrorResult()) {
+            result = B.createHopToMainActorIfNeededThunk(loc, result, subs);
+          }
+          break;
+        }
       }
     }
   }

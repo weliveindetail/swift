@@ -46,7 +46,7 @@ public:
                    Size size, Alignment align, SpareBitVector &&spareBits)
       : TrivialScalarPairTypeInfo(storageType, size, std::move(spareBits),
                                   align, IsTriviallyDestroyable,
-                                  IsCopyable, IsFixedSize) {}
+                                  IsCopyable, IsFixedSize, IsABIAccessible) {}
 
   static Size getFirstElementSize(IRGenModule &IGM) {
     return IGM.getPointerSize();
@@ -258,8 +258,8 @@ llvm::Value *irgen::emitBuiltinStartAsyncLet(IRGenFunction &IGF,
   // space, so that we don't run into that bug. We leave a note on the
   // declaration so that coroutine splitting can pad out the final context
   // size after splitting.
-  auto deploymentAvailability
-    = AvailabilityContext::forDeploymentTarget(IGF.IGM.Context);
+  auto deploymentAvailability =
+      AvailabilityRange::forDeploymentTarget(IGF.IGM.Context);
   if (!deploymentAvailability.isContainedIn(
                                    IGF.IGM.Context.getSwift57Availability()))
   {
@@ -335,6 +335,21 @@ llvm::Value *irgen::emitCreateTaskGroup(IRGenFunction &IGF,
   assert(subs.getReplacementTypes().size() == 1 &&
          "createTaskGroup should have a type substitution");
   auto resultType = subs.getReplacementTypes()[0]->getCanonicalType();
+
+  if (IGF.IGM.Context.LangOpts.hasFeature(Feature::Embedded)) {
+    // In Embedded Swift, call swift_taskGroup_initializeWithOptions instead, to
+    // avoid needing a Metadata argument.
+    llvm::Value *options = llvm::ConstantPointerNull::get(IGF.IGM.Int8PtrTy);
+    llvm::Value *resultTypeMetadata = llvm::ConstantPointerNull::get(IGF.IGM.Int8PtrTy);
+    options = maybeAddEmbeddedSwiftResultTypeInfo(IGF, options, resultType);
+    if (!groupFlags) groupFlags = llvm::ConstantInt::get(IGF.IGM.SizeTy, 0);
+    llvm::CallInst *call = IGF.Builder.CreateCall(IGF.IGM.getTaskGroupInitializeWithOptionsFunctionPointer(),
+                                  {groupFlags, group, resultTypeMetadata, options});
+    call->setDoesNotThrow();
+    call->setCallingConv(IGF.IGM.SwiftCC);
+    return group;
+  }
+
   auto resultTypeMetadata = IGF.emitAbstractTypeMetadataRef(resultType);
 
   llvm::CallInst *call;
@@ -342,8 +357,9 @@ llvm::Value *irgen::emitCreateTaskGroup(IRGenFunction &IGF,
     call = IGF.Builder.CreateCall(IGF.IGM.getTaskGroupInitializeWithFlagsFunctionPointer(),
                                   {groupFlags, group, resultTypeMetadata});
   } else {
-    call = IGF.Builder.CreateCall(IGF.IGM.getTaskGroupInitializeFunctionPointer(),
-                                  {group, resultTypeMetadata});
+    call =
+        IGF.Builder.CreateCall(IGF.IGM.getTaskGroupInitializeFunctionPointer(),
+                               {group, resultTypeMetadata});
   }
   call->setDoesNotThrow();
   call->setCallingConv(IGF.IGM.SwiftCC);

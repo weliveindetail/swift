@@ -108,7 +108,7 @@ InProcessPlugins::create(const char *serverPath) {
                                    "entry point not found in '%s'", serverPath);
   }
   return std::unique_ptr<InProcessPlugins>(new InProcessPlugins(
-      serverPath, server, reinterpret_cast<HandleMessageFunction>(funcPtr)));
+      serverPath, reinterpret_cast<HandleMessageFunction>(funcPtr)));
 }
 
 llvm::Error InProcessPlugins::sendMessage(llvm::StringRef message) {
@@ -223,16 +223,10 @@ PluginRegistry::loadExecutablePlugin(StringRef path, bool disableSandbox) {
 
 llvm::Error LoadedExecutablePlugin::spawnIfNeeded() {
   if (Process) {
-    // See if the loaded one is still usable.
-    if (!Process->isStale)
-      return llvm::Error::success();
-
     // NOTE: We don't check the mtime here because 'stat(2)' call is too heavy.
     // PluginRegistry::loadExecutablePlugin() checks it and replace this object
     // itself if the plugin is updated.
-
-    // The plugin is stale. Discard the previously opened process.
-    Process.reset();
+    return llvm::Error::success();
   }
 
   // Create command line arguments.

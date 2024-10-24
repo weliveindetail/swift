@@ -397,52 +397,11 @@ public:
                                 E->getRParenLoc());
   }
 
-  Pattern *convertBindingsToOptionalSome(Expr *E) {
-    auto *expr = E->getSemanticsProvidingExpr();
-    auto *bindExpr = dyn_cast<BindOptionalExpr>(expr);
-    if (!bindExpr) {
-      // Let's see if this expression prefixed with any number of '?'
-      // has any other disjoint 'BindOptionalExpr' inside of it, if so,
-      // we need to wrap such sub-expression into `OptionalEvaluationExpr`.
-      bool hasDisjointChaining = false;
-      expr->forEachChildExpr([&](Expr *subExpr) -> Expr * {
-        // If there is `OptionalEvaluationExpr` in the AST
-        // it means that all of possible `BindOptionalExpr`
-        // which follow are covered by it.
-        if (isa<OptionalEvaluationExpr>(subExpr))
-          return nullptr;
-
-        if (isa<BindOptionalExpr>(subExpr)) {
-          hasDisjointChaining = true;
-          return nullptr;
-        }
-
-        return subExpr;
-      });
-
-      if (hasDisjointChaining)
-        E = new (Context) OptionalEvaluationExpr(E);
-
-      return getSubExprPattern(E);
-    }
-
-    auto *subExpr = convertBindingsToOptionalSome(bindExpr->getSubExpr());
-    return OptionalSomePattern::create(Context, subExpr,
-                                       bindExpr->getQuestionLoc());
+  // Convert a x? to OptionalSome pattern.
+  Pattern *visitBindOptionalExpr(BindOptionalExpr *E) {
+    return OptionalSomePattern::create(
+        Context, getSubExprPattern(E->getSubExpr()), E->getQuestionLoc());
   }
-
-  // Convert a x? to OptionalSome pattern.  In the AST form, this will look like
-  // an OptionalEvaluationExpr with an immediate BindOptionalExpr inside of it.
-  Pattern *visitOptionalEvaluationExpr(OptionalEvaluationExpr *E) {
-    auto *subExpr = E->getSubExpr();
-    // We only handle the case where one or more bind expressions are subexprs
-    // of the optional evaluation.  Other cases are not simple postfix ?'s.
-    if (!isa<BindOptionalExpr>(subExpr->getSemanticsProvidingExpr()))
-      return nullptr;
-
-    return convertBindingsToOptionalSome(subExpr);
-  }
-
 
   // Unresolved member syntax '.Element' forms an EnumElement pattern. The
   // element will be resolved when we type-check the pattern.
@@ -1601,7 +1560,7 @@ Pattern *TypeChecker::coercePatternToType(
     }
 
     // If there is a subpattern, push the enum element type down onto it.
-    auto argType = elt->getArgumentInterfaceType();
+    auto payloadType = elt->getPayloadInterfaceType();
     if (EEP->hasSubPattern()) {
       Pattern *sub = EEP->getSubPattern();
       if (!elt->hasAssociatedValues()) {
@@ -1615,8 +1574,8 @@ Pattern *TypeChecker::coercePatternToType(
       }
       
       Type elementType;
-      if (argType)
-        elementType = enumTy->getTypeOfMember(elt, argType);
+      if (payloadType)
+        elementType = enumTy->getTypeOfMember(elt, payloadType);
       else
         elementType = TupleType::getEmpty(Context);
       auto newSubOptions = subOptions;
@@ -1633,11 +1592,11 @@ Pattern *TypeChecker::coercePatternToType(
         return nullptr;
 
       EEP->setSubPattern(sub);
-    } else if (argType) {
+    } else if (payloadType) {
       // Else if the element pattern has no sub-pattern but the element type has
       // associated values, expand it to be semantically equivalent to an
       // element pattern of wildcards.
-      Type elementType = enumTy->getTypeOfMember(elt, argType);
+      Type elementType = enumTy->getTypeOfMember(elt, payloadType);
       SmallVector<TuplePatternElt, 8> elements;
       if (auto *TTy = dyn_cast<TupleType>(elementType.getPointer())) {
         for (auto &elt : TTy->getElements()) {

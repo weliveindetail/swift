@@ -254,8 +254,8 @@ SILGenFunction::emitTransformExistential(SILLocation loc,
   FormalEvaluationScope scope(*this);
 
   if (inputType->isAnyExistentialType()) {
-    CanType openedType = OpenedArchetypeType::getAny(inputType,
-                                                     F.getGenericSignature());
+    CanType openedType = OpenedArchetypeType::getAny(inputType)
+        ->getCanonicalType();
     SILType loweredOpenedType = getLoweredType(openedType);
 
     input = emitOpenExistential(loc, input,
@@ -642,9 +642,8 @@ ManagedValue Transform::transform(ManagedValue v,
 
     auto layout = instanceType.getExistentialLayout();
     if (layout.getSuperclass()) {
-      CanType openedType =
-          OpenedArchetypeType::getAny(inputSubstType,
-                                      SGF.F.getGenericSignature());
+      CanType openedType = OpenedArchetypeType::getAny(inputSubstType)
+          ->getCanonicalType();
       SILType loweredOpenedType = SGF.getLoweredType(openedType);
 
       FormalEvaluationScope scope(SGF);
@@ -6822,7 +6821,8 @@ SILGenFunction::emitVTableThunk(SILDeclRef base,
     break;
   }
 
-  case SILCoroutineKind::YieldOnce: {
+  case SILCoroutineKind::YieldOnce:
+  case SILCoroutineKind::YieldOnce2: {
     SmallVector<SILValue, 4> derivedYields;
     auto tokenAndCleanup =
         emitBeginApplyWithRethrow(loc, derivedRef,
@@ -7210,7 +7210,8 @@ void SILGenFunction::emitProtocolWitness(
     break;
   }
 
-  case SILCoroutineKind::YieldOnce: {
+  case SILCoroutineKind::YieldOnce:
+  case SILCoroutineKind::YieldOnce2: {
     SmallVector<SILValue, 4> witnessYields;
     auto tokenAndCleanup =
       emitBeginApplyWithRethrow(loc, witnessFnRef, witnessSILTy, witnessSubs,

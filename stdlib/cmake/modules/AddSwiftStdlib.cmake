@@ -55,7 +55,7 @@ function(_add_target_variant_c_compile_link_flags)
   if("${CFLAGS_SDK}" IN_LIST SWIFT_DARWIN_PLATFORMS)
     # Check if there's a specific OS deployment version needed for this invocation
     if("${CFLAGS_SDK}" STREQUAL "OSX")
-      if(DEFINED maccatalyst_build_flavor)
+      if(DEFINED maccatalyst_build_flavor AND DEFINED CFLAGS_DEPLOYMENT_VERSION_MACCATALYST)
         set(DEPLOYMENT_VERSION ${CFLAGS_DEPLOYMENT_VERSION_MACCATALYST})
       else()
         set(DEPLOYMENT_VERSION ${CFLAGS_DEPLOYMENT_VERSION_OSX})
@@ -935,6 +935,13 @@ function(add_swift_target_library_single target name)
     source_group("TableGen descriptions" FILES ${SWIFTLIB_SINGLE_TDS})
 
     set(SWIFTLIB_SINGLE_SOURCES ${SWIFTLIB_SINGLE_SOURCES} ${SWIFTLIB_SINGLE_HEADERS} ${SWIFTLIB_SINGLE_TDS})
+  endif()
+
+  # FIXME: swiftDarwin currently trips an assertion in SymbolGraphGen
+  if (SWIFTLIB_IS_STDLIB AND SWIFT_STDLIB_BUILD_SYMBOL_GRAPHS AND NOT ${name} STREQUAL "swiftDarwin")
+    list(APPEND SWIFTLIB_SINGLE_SWIFT_COMPILE_FLAGS "-Xfrontend;-emit-symbol-graph")
+    list(APPEND SWIFTLIB_SINGLE_SWIFT_COMPILE_FLAGS
+         "-Xfrontend;-emit-symbol-graph-dir;-Xfrontend;${out_lib_dir}/symbol-graph/${VARIANT_NAME}")
   endif()
 
   if(MODULE)
@@ -2232,7 +2239,6 @@ function(add_swift_target_library name)
         list(APPEND swiftlib_swift_compile_flags_all -D_LIB)
       endif()
     endif()
-
 
     # Collect architecture agnostic SDK linker flags
     set(swiftlib_link_flags_all ${SWIFTLIB_LINK_FLAGS})

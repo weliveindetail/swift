@@ -54,6 +54,7 @@
 #include "swift/Frontend/CompileJobCacheKey.h"
 #include "swift/Frontend/DiagnosticHelper.h"
 #include "swift/Frontend/Frontend.h"
+#include "swift/Frontend/MakeStyleDependencies.h"
 #include "swift/Frontend/ModuleInterfaceLoader.h"
 #include "swift/Frontend/ModuleInterfaceSupport.h"
 #include "swift/IRGen/TBDGen.h"
@@ -107,15 +108,13 @@ static std::string displayName(StringRef MainExecutablePath) {
   return Name;
 }
 
-static void emitMakeDependenciesIfNeeded(DiagnosticEngine &diags,
-                                         DependencyTracker *depTracker,
-                                         const FrontendOptions &opts,
-                                         llvm::vfs::OutputBackend &backend) {
-  opts.InputsAndOutputs.forEachInputProducingSupplementaryOutput(
-      [&](const InputFile &f) -> bool {
-        return swift::emitMakeDependenciesIfNeeded(diags, depTracker, opts, f,
-                                                   backend);
-      });
+static void emitMakeDependenciesIfNeeded(CompilerInstance &instance) {
+  instance.getInvocation()
+      .getFrontendOptions()
+      .InputsAndOutputs.forEachInputProducingSupplementaryOutput(
+          [&](const InputFile &f) -> bool {
+            return swift::emitMakeDependenciesIfNeeded(instance, f);
+          });
 }
 
 static void
@@ -238,11 +237,8 @@ static void countStatsOfSourceFile(UnifiedStatsReporter &Stats,
   SF->getPrecedenceGroups(groups);
   C.NumPrecedenceGroups += groups.size();
 
-  auto bufID = SF->getBufferID();
-  if (bufID.has_value()) {
-    C.NumSourceLines +=
-      SM.getEntireTextForBuffer(bufID.value()).count('\n');
-  }
+  C.NumSourceLines +=
+    SM.getEntireTextForBuffer(SF->getBufferID()).count('\n');
 }
 
 static void countASTStats(UnifiedStatsReporter &Stats,
@@ -916,7 +912,7 @@ static void dumpAPIIfNeeded(const CompilerInstance &Instance) {
     PO.PrintOriginalSourceText = true;
     PO.Indent = 2;
     PO.PrintAccess = false;
-    PO.SkipUnderscoredStdlibProtocols = true;
+    PO.SkipUnderscoredSystemProtocols = true;
     SF->print(TempOS, PO);
     if (TempOS.str().trim().empty())
       return false; // nothing to show.
@@ -1059,9 +1055,7 @@ static void performEndOfPipelineActions(CompilerInstance &Instance) {
   emitSwiftdepsForAllPrimaryInputsIfNeeded(Instance);
 
   // Emit Make-style dependencies.
-  emitMakeDependenciesIfNeeded(Instance.getDiags(),
-                               Instance.getDependencyTracker(), opts,
-                               Instance.getOutputBackend());
+  emitMakeDependenciesIfNeeded(Instance);
 
   // Emit extracted constant values for every file in the batch
   emitConstValuesForAllPrimaryInputsIfNeeded(Instance);
@@ -1081,8 +1075,8 @@ static void printSingleFrontendOpt(llvm::opt::OptTable &table, options::ID id,
   if (table.getOption(id).hasFlag(options::FrontendOption) ||
       table.getOption(id).hasFlag(options::AutolinkExtractOption) ||
       table.getOption(id).hasFlag(options::ModuleWrapOption) ||
-      table.getOption(id).hasFlag(options::SwiftIndentOption) ||
       table.getOption(id).hasFlag(options::SwiftSymbolGraphExtractOption) ||
+      table.getOption(id).hasFlag(options::SwiftSynthesizeInterfaceOption) ||
       table.getOption(id).hasFlag(options::SwiftAPIDigesterOption)) {
     auto name = StringRef(table.getOptionName(id));
     if (!name.empty()) {
@@ -1326,7 +1320,7 @@ static bool tryReplayCompilerResults(CompilerInstance &Instance) {
   bool replayed = replayCachedCompilerOutputs(
       Instance.getObjectStore(), Instance.getActionCache(),
       *Instance.getCompilerBaseKey(), Instance.getDiags(),
-      Instance.getInvocation().getFrontendOptions().InputsAndOutputs, *CDP,
+      Instance.getInvocation().getFrontendOptions(), *CDP,
       Instance.getInvocation().getCASOptions().EnableCachingRemarks,
       Instance.getInvocation().getIRGenOptions().UseCASBackend);
 
@@ -1986,12 +1980,18 @@ int swift::performFrontend(ArrayRef<const char *> Args,
   auto configurationFileStackTraces =
       std::make_unique<std::optional<PrettyStackTraceFileContents>[]>(
           configurationFileBuffers.size());
-  for_each(configurationFileBuffers.begin(), configurationFileBuffers.end(),
-           &configurationFileStackTraces[0],
-           [](const std::unique_ptr<llvm::MemoryBuffer> &buffer,
-              std::optional<PrettyStackTraceFileContents> &trace) {
-             trace.emplace(*buffer);
-           });
+
+  // If the compile is a whole module job, then the contents of the filelist
+  // is every file in the module, which is not very interesting and could be
+  // hundreds or thousands of lines. Skip dumping this output in that case.
+  if (!Invocation.getFrontendOptions().InputsAndOutputs.isWholeModule()) {
+    for_each(configurationFileBuffers.begin(), configurationFileBuffers.end(),
+             configurationFileStackTraces.get(),
+             [](const std::unique_ptr<llvm::MemoryBuffer> &buffer,
+                std::optional<PrettyStackTraceFileContents> &trace) {
+               trace.emplace(*buffer);
+             });
+  }
 
   // The compiler invocation is now fully configured; notify our observer.
   if (observer) {

@@ -215,17 +215,6 @@ static Expr *makeBinOp(ASTContext &Ctx, Expr *Op, Expr *LHS, Expr *RHS,
     await->setSubExpr(sub);
     return await;
   }
-  
-  // If this is an assignment operator, and the left operand is an optional
-  // evaluation, pull the operator into the chain.
-  if (opPrecedence && opPrecedence->isAssignment()) {
-    if (auto optEval = dyn_cast<OptionalEvaluationExpr>(LHS)) {
-      auto sub = makeBinOp(Ctx, Op, optEval->getSubExpr(), RHS,
-                           opPrecedence, isEndOfSequence);
-      optEval->setSubExpr(sub);
-      return optEval;
-    }
-  }
 
   // If the right operand is a try or await, it's an error unless the operator
   // is an assignment or conditional operator and there's nothing to
@@ -290,9 +279,9 @@ static Expr *makeBinOp(ASTContext &Ctx, Expr *Op, Expr *LHS, Expr *RHS,
   if (auto *ternary = dyn_cast<TernaryExpr>(Op)) {
     // Resolve the ternary expression.
     if (!Ctx.CompletionCallback) {
-      // In code completion we might call preCheckExpression twice - once for
+      // In code completion we might call preCheckTarget twice - once for
       // the first pass and once for the second pass. This is fine since
-      // preCheckExpression idempotent.
+      // preCheckTarget is idempotent.
       assert(!ternary->isFolded() && "already folded if expr in sequence?!");
     }
     ternary->setCondExpr(LHS);
@@ -303,9 +292,9 @@ static Expr *makeBinOp(ASTContext &Ctx, Expr *Op, Expr *LHS, Expr *RHS,
   if (auto *assign = dyn_cast<AssignExpr>(Op)) {
     // Resolve the assignment expression.
     if (!Ctx.CompletionCallback) {
-      // In code completion we might call preCheckExpression twice - once for
+      // In code completion we might call preCheckTarget twice - once for
       // the first pass and once for the second pass. This is fine since
-      // preCheckExpression idempotent.
+      // preCheckTarget is idempotent.
       assert(!assign->isFolded() && "already folded assign expr in sequence?!");
     }
     assign->setDest(LHS);
@@ -316,9 +305,9 @@ static Expr *makeBinOp(ASTContext &Ctx, Expr *Op, Expr *LHS, Expr *RHS,
   if (auto *as = dyn_cast<ExplicitCastExpr>(Op)) {
     // Resolve the 'as' or 'is' expression.
     if (!Ctx.CompletionCallback) {
-      // In code completion we might call preCheckExpression twice - once for
+      // In code completion we might call preCheckTarget twice - once for
       // the first pass and once for the second pass. This is fine since
-      // preCheckExpression idempotent.
+      // preCheckTarget is idempotent.
       assert(!as->isFolded() && "already folded 'as' expr in sequence?!");
     }
     assert(RHS == as && "'as' with non-type RHS?!");
@@ -329,9 +318,9 @@ static Expr *makeBinOp(ASTContext &Ctx, Expr *Op, Expr *LHS, Expr *RHS,
   if (auto *arrow = dyn_cast<ArrowExpr>(Op)) {
     // Resolve the '->' expression.
     if (!Ctx.CompletionCallback) {
-      // In code completion we might call preCheckExpression twice - once for
+      // In code completion we might call preCheckTarget twice - once for
       // the first pass and once for the second pass. This is fine since
-      // preCheckExpression idempotent.
+      // preCheckTarget is idempotent.
       assert(!arrow->isFolded() && "already folded '->' expr in sequence?!");
     }
     arrow->setArgsExpr(LHS);

@@ -1804,7 +1804,7 @@ shouldReplaceCallByContiguousArrayStorageAnyObject(SILFunction &F,
 
   // On SwiftStdlib 5.7 we can replace the call.
   auto &ctxt = storageMetaTy->getASTContext();
-  auto deployment = AvailabilityContext::forDeploymentTarget(ctxt);
+  auto deployment = AvailabilityRange::forDeploymentTarget(ctxt);
   if (!deployment.isContainedIn(ctxt.getSwift57Availability()))
     return std::nullopt;
 
@@ -2001,24 +2001,6 @@ SILInstruction *SILCombiner::visitMarkDependenceInst(MarkDependenceInst *mdi) {
     // a literal is replace by the string_literal itself.
     replaceInstUsesWith(*mdi, mdi->getValue());
     return eraseInstFromFunction(*mdi);
-  }
-
-  return nullptr;
-}
-
-SILInstruction *
-SILCombiner::visitClassifyBridgeObjectInst(ClassifyBridgeObjectInst *cboi) {
-  auto *urc = dyn_cast<UncheckedRefCastInst>(cboi->getOperand());
-  if (!urc)
-    return nullptr;
-
-  auto type = urc->getOperand()->getType().getASTType();
-  if (ClassDecl *cd = type->getClassOrBoundGenericClass()) {
-    if (!cd->isObjC()) {
-      auto int1Ty = SILType::getBuiltinIntegerType(1, Builder.getASTContext());
-      SILValue zero = Builder.createIntegerLiteral(cboi->getLoc(), int1Ty, 0);
-      return Builder.createTuple(cboi->getLoc(), {zero, zero});
-    }
   }
 
   return nullptr;

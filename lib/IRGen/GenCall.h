@@ -121,15 +121,6 @@ namespace irgen {
                                            CanSILFunctionType substitutedType,
                                            SubstitutionMap substitutionMap);
 
-  struct CombinedResultAndErrorType {
-    llvm::Type *combinedTy;
-    llvm::SmallVector<unsigned, 2> errorValueMapping;
-  };
-  CombinedResultAndErrorType
-  combineResultAndTypedErrorType(const IRGenModule &IGM,
-                                 const NativeConventionSchema &resultSchema,
-                                 const NativeConventionSchema &errorSchema);
-
   /// Given an async function, get the pointer to the function to be called and
   /// the size of the context to be allocated.
   ///
@@ -212,10 +203,16 @@ namespace irgen {
 
   Address emitAllocYieldOnceCoroutineBuffer(IRGenFunction &IGF);
   void emitDeallocYieldOnceCoroutineBuffer(IRGenFunction &IGF, Address buffer);
+  void emitDeallocYieldOnce2CoroutineFrame(IRGenFunction &IGF,
+                                           llvm::Value *allocation);
   void
   emitYieldOnceCoroutineEntry(IRGenFunction &IGF,
                               CanSILFunctionType coroutineType,
                               NativeCCEntryPointArgumentEmission &emission);
+  void
+  emitYieldOnce2CoroutineEntry(IRGenFunction &IGF,
+                               CanSILFunctionType coroutineType,
+                               NativeCCEntryPointArgumentEmission &emission);
 
   Address emitAllocYieldManyCoroutineBuffer(IRGenFunction &IGF);
   void emitDeallocYieldManyCoroutineBuffer(IRGenFunction &IGF, Address buffer);
@@ -273,10 +270,6 @@ namespace irgen {
                                                     const FunctionPointer &fn);
   void forwardAsyncCallResult(IRGenFunction &IGF, CanSILFunctionType fnType,
                               AsyncContextLayout &layout, llvm::CallInst *call);
-
-  /// Converts a value for direct error return.
-  llvm::Value *convertForDirectError(IRGenFunction &IGF, llvm::Value *value,
-                                     llvm::Type *toTy, bool forExtraction);
 
 } // end namespace irgen
 } // end namespace swift

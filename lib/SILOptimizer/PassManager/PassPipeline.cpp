@@ -255,9 +255,6 @@ static void addMandatoryDiagnosticOptPipeline(SILPassPipelinePlan &P) {
   // Canonical swift requires all non cond_br critical edges to be split.
   P.addSplitNonCondBrCriticalEdges();
 
-  // For embedded Swift: Specialize generic class vtables.
-  P.addVTableSpecializer();
-
   P.addMandatoryPerformanceOptimizations();
   P.addOnoneSimplification();
   P.addAllocVectorLowering();
@@ -457,7 +454,13 @@ void addFunctionPasses(SILPassPipelinePlan &P,
   P.addMem2Reg();
 
   // Run the existential specializer Pass.
-  P.addExistentialSpecializer();
+  if (!P.getOptions().EmbeddedSwift) {
+    // MandatoryPerformanceOptimizations already took care of all specializations
+    // in embedded Swift mode, running the existential specializer might introduce
+    // more generic calls from non-generic functions, which breaks the assumptions
+    // of embedded Swift.
+    P.addExistentialSpecializer();
+  }
 
   // Cleanup, which is important if the inliner has restarted the pass pipeline.
   P.addPerformanceConstantPropagation();
@@ -514,6 +517,7 @@ void addFunctionPasses(SILPassPipelinePlan &P,
     P.addCopyPropagation();
   }
   P.addSemanticARCOpts();
+  P.addLoadCopyToBorrowOptimization();
 
   if (!P.getOptions().EnableOSSAModules) {
     if (P.getOptions().StopOptimizationBeforeLoweringOwnership)
@@ -543,6 +547,7 @@ void addFunctionPasses(SILPassPipelinePlan &P,
       P.addCopyPropagation();
     }
     P.addSemanticARCOpts();
+    P.addLoadCopyToBorrowOptimization();
   }
 
   // Promote stack allocations to values and eliminate redundant
@@ -571,6 +576,7 @@ void addFunctionPasses(SILPassPipelinePlan &P,
   }
   // Optimize copies created during RLE.
   P.addSemanticARCOpts();
+  P.addLoadCopyToBorrowOptimization();
 
   P.addCOWOpts();
   P.addPerformanceConstantPropagation();
@@ -608,6 +614,7 @@ void addFunctionPasses(SILPassPipelinePlan &P,
       P.addCopyPropagation();
     }
     P.addSemanticARCOpts();
+    P.addLoadCopyToBorrowOptimization();
   }
 }
 
@@ -645,6 +652,7 @@ static void addPerfEarlyModulePassPipeline(SILPassPipelinePlan &P) {
     P.addCopyPropagation();
   }
   P.addSemanticARCOpts();
+  P.addLoadCopyToBorrowOptimization();
 
   // Devirtualizes differentiability witnesses into functions that reference them.
   // This unblocks many other passes' optimizations (e.g. inlining) and this is
@@ -912,6 +920,8 @@ SILPassPipelinePlan
 SILPassPipelinePlan::getLoweringPassPipeline(const SILOptions &Options) {
   SILPassPipelinePlan P(Options);
   P.startPipeline("Lowering");
+  // Lower thunks.
+  P.addThunkLowering();
   P.addLowerHopToActor(); // FIXME: earlier for more opportunities?
   P.addOwnershipModelEliminator();
   P.addAlwaysEmitConformanceMetadataPreservation();
@@ -989,6 +999,7 @@ SILPassPipelinePlan::getPerformancePassPipeline(const SILOptions &Options) {
       P.addCopyPropagation();
     }
     P.addSemanticARCOpts();
+    P.addLoadCopyToBorrowOptimization();
   }
 
   P.addCrossModuleOptimization();

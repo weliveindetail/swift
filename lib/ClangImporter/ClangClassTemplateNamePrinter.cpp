@@ -66,6 +66,8 @@ struct TemplateInstantiationNamePrinter
   std::string VisitRecordType(const clang::RecordType *type) {
     auto tagDecl = type->getAsTagDecl();
     if (auto namedArg = dyn_cast_or_null<clang::NamedDecl>(tagDecl)) {
+      if (auto typeDefDecl = tagDecl->getTypedefNameForAnonDecl())
+        namedArg = typeDefDecl;
       llvm::SmallString<128> storage;
       llvm::raw_svector_ostream buffer(storage);
       nameImporter->importName(namedArg, version, clang::DeclarationName())
@@ -128,6 +130,12 @@ struct TemplateInstantiationNamePrinter
     buffer << ")";
 
     return buffer.str().str();
+  }
+
+  std::string VisitVectorType(const clang::VectorType *type) {
+    return (Twine("SIMD") + std::to_string(type->getNumElements()) + "<" +
+            Visit(type->getElementType().getTypePtr()) + ">")
+        .str();
   }
 };
 

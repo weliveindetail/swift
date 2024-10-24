@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 import Basic
+import AST
 import SILBridging
 
 //===----------------------------------------------------------------------===//
@@ -391,22 +392,6 @@ final public class HopToExecutorInst : Instruction, UnaryInstruction {}
 
 final public class FixLifetimeInst : Instruction, UnaryInstruction {}
 
-// VarDecl is a struct wrapper around a C++ VarDecl pointer. This insulates the Swift interface from the C++ interface and avoids the need to fake a Swift class. When the AST exposes VarDecl, then this can be replaced whenever it is convenient.
-public struct VarDecl {
-  var bridged: BridgedVarDecl
-  
-  public init?(bridged: BridgedNullableVarDecl) {
-    guard let decl = bridged.raw else { return nil }
-    self.bridged = BridgedVarDecl(raw: decl)
-  }
-
-  public var sourceLoc: SourceLoc? {
-    return SourceLoc(bridged: bridged.getSourceLocation())
-  }
-
-  public var userFacingName: String { String(bridged.getUserFacingName()) }
-}
-
 // See C++ VarDeclCarryingInst
 public protocol VarDeclInstruction {
   var varDecl: VarDecl? { get }
@@ -429,7 +414,7 @@ public protocol MetaInstruction: Instruction {}
 
 final public class DebugValueInst : Instruction, UnaryInstruction, DebugVariableInstruction, MetaInstruction {
   public var varDecl: VarDecl? {
-    VarDecl(bridged: bridged.DebugValue_getDecl())
+    bridged.DebugValue_getDecl().getAs(VarDecl.self)
   }
 
   public var debugVariable: DebugVariable {
@@ -592,7 +577,7 @@ final public class BuiltinInst : SingleValueInstruction {
   }
 
   public var substitutionMap: SubstitutionMap {
-    SubstitutionMap(bridged.BuiltinInst_getSubstitutionMap())
+    SubstitutionMap(bridged: bridged.BuiltinInst_getSubstitutionMap())
   }
 }
 
@@ -669,6 +654,14 @@ class TailAddrInst : SingleValueInstruction {
 final public
 class InitExistentialRefInst : SingleValueInstruction, UnaryInstruction {
   public var instance: Value { operand.value }
+
+  public var conformances: ConformanceArray {
+    ConformanceArray(bridged: bridged.InitExistentialRefInst_getConformances())
+  }
+
+  public var formalConcreteType: CanonicalType {
+    CanonicalType(bridged: bridged.InitExistentialRefInst_getFormalConcreteType())
+  }
 }
 
 final public
@@ -718,6 +711,16 @@ class ExistentialMetatypeInst : SingleValueInstruction, UnaryInstruction {}
 
 final public class ObjCProtocolInst : SingleValueInstruction {}
 
+final public class TypeValueInst: SingleValueInstruction, UnaryInstruction {
+  public var paramType: CanonicalType {
+    CanonicalType(bridged: bridged.TypeValueInst_getParamType())
+  }
+
+  public var value: Int {
+    bridged.TypeValueInst_getValue()
+  }
+}
+
 public class GlobalAccessInstruction : SingleValueInstruction {
   final public var global: GlobalVariable {
     bridged.GlobalAccessInst_getGlobal().globalVar
@@ -745,7 +748,7 @@ final public class PreviousDynamicFunctionRefInst : FunctionRefBaseInst {
 
 final public class GlobalAddrInst : GlobalAccessInstruction, VarDeclInstruction {
   public var varDecl: VarDecl? {
-    VarDecl(bridged: bridged.GlobalAddr_getDecl())
+    bridged.GlobalAddr_getDecl().getAs(VarDecl.self)
   }
 
   public var dependencyToken: Value? {
@@ -872,7 +875,7 @@ final public class RefElementAddrInst : SingleValueInstruction, UnaryInstruction
   public var isImmutable: Bool { bridged.RefElementAddrInst_isImmutable() }
   
   public var varDecl: VarDecl? {
-    VarDecl(bridged: bridged.RefElementAddr_getDecl())
+    bridged.RefElementAddr_getDecl().getAs(VarDecl.self)
   }
 }
 
@@ -1149,7 +1152,7 @@ final public class AllocStackInst : SingleValueInstruction, Allocation, DebugVar
   public var hasDynamicLifetime: Bool { bridged.AllocStackInst_hasDynamicLifetime() }
 
   public var varDecl: VarDecl? {
-    VarDecl(bridged: bridged.AllocStack_getDecl())
+    bridged.AllocStack_getDecl().getAs(VarDecl.self)
   }
 
   public var debugVariable: DebugVariable {
@@ -1186,12 +1189,17 @@ final public class AllocRefDynamicInst : AllocRefInstBase {
   public var isDynamicTypeDeinitAndSizeKnownEquivalentToBaseType: Bool {
     bridged.AllocRefDynamicInst_isDynamicTypeDeinitAndSizeKnownEquivalentToBaseType()
   }
+
+  public var metatypeOperand: Operand {
+    let numTailTypes = bridged.AllocRefInstBase_getNumTailTypes()
+    return operands[numTailTypes]
+  }
 }
 
 final public class AllocBoxInst : SingleValueInstruction, Allocation, DebugVariableInstruction {
 
   public var varDecl: VarDecl? {
-    VarDecl(bridged: bridged.AllocBox_getDecl())
+    bridged.AllocBox_getDecl().getAs(VarDecl.self)
   }
 
   public var debugVariable: DebugVariable {
@@ -1248,7 +1256,15 @@ final public class BeginBorrowInst : SingleValueInstruction, UnaryInstruction, B
   }
 }
 
-final public class LoadBorrowInst : SingleValueInstruction, LoadInstruction, BorrowIntroducingInstruction {}
+final public class LoadBorrowInst : SingleValueInstruction, LoadInstruction, BorrowIntroducingInstruction {
+
+  // True if the invariants on `load_borrow` have not been checked and should not be strictly enforced.
+  //
+  // This can only occur during raw SIL before move-only checking occurs. Developers can write incorrect
+  // code using noncopyable types that consumes or mutates a memory location while that location is borrowed,
+  // but the move-only checker must diagnose those problems before canonical SIL is formed.
+  public var isUnchecked: Bool { bridged.LoadBorrowInst_isUnchecked() }
+}
 
 final public class StoreBorrowInst : SingleValueInstruction, StoringInstruction, BorrowIntroducingInstruction {
   var allocStack: AllocStackInst {
@@ -1592,4 +1608,7 @@ final public class CheckedCastAddrBranchInst : TermInst {
       fatalError("invalid cast consumption kind")
     }
   }
+}
+
+final public class ThunkInst : Instruction {
 }

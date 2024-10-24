@@ -675,7 +675,7 @@ public:
 
     SGM.useConformance(assocConformance);
 
-    Entries.push_back(SILWitnessTable::AssociatedTypeProtocolWitness{
+    Entries.push_back(SILWitnessTable::AssociatedConformanceWitness{
         req.getAssociation(), req.getAssociatedRequirement(),
         assocConformance});
   }
@@ -902,8 +902,7 @@ static SILFunction *emitSelfConformanceWitness(SILGenModule &SGM,
 
   // Open the protocol type.
   auto openedType = OpenedArchetypeType::get(
-      protocol->getDeclaredExistentialType()->getCanonicalType(),
-      GenericSignature());
+      protocol->getDeclaredExistentialType()->getCanonicalType());
 
   // Form the substitutions for calling the witness.
   auto witnessSubs = SubstitutionMap::getProtocolSubstitutions(protocol,
@@ -1085,7 +1084,7 @@ public:
     if (witness.isInvalid())
       return addMissingDefault();
 
-    auto entry = SILWitnessTable::AssociatedTypeProtocolWitness{
+    auto entry = SILWitnessTable::AssociatedConformanceWitness{
         req.getAssociation(), req.getAssociatedRequirement(), witness};
     DefaultWitnesses.push_back(entry);
   }
@@ -1248,10 +1247,10 @@ public:
 
   void visitVarDecl(VarDecl *vd) {
     // Collect global variables for static properties.
-    // FIXME: We can't statically emit a global variable for generic properties.
     if (vd->isStatic() && vd->hasStorage()) {
       emitTypeMemberGlobalVariable(SGM, vd);
       visitAccessors(vd);
+      SGM.tryEmitPropertyDescriptor(vd);
       return;
     }
 

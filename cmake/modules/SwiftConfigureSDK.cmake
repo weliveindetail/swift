@@ -68,7 +68,7 @@ function(_report_sdk prefix)
 endfunction()
 
 # Remove architectures not supported by the SDK from the given list.
-function(remove_sdk_unsupported_archs name os sdk_path architectures_var)
+function(remove_sdk_unsupported_archs name os sdk_path deployment_version architectures_var)
   execute_process(COMMAND
       /usr/libexec/PlistBuddy -c "Print :SupportedTargets:${os}:Archs" ${sdk_path}/SDKSettings.plist
     OUTPUT_VARIABLE sdk_supported_archs
@@ -229,7 +229,7 @@ macro(configure_sdk_darwin
   endif()
 
   # Remove any architectures not supported by the SDK.
-  remove_sdk_unsupported_archs(${name} ${xcrun_name} ${SWIFT_SDK_${prefix}_PATH} SWIFT_SDK_${prefix}_ARCHITECTURES)
+  remove_sdk_unsupported_archs(${name} ${xcrun_name} ${SWIFT_SDK_${prefix}_PATH} "${SWIFT_SDK_${prefix}_DEPLOYMENT_VERSION}" SWIFT_SDK_${prefix}_ARCHITECTURES)
 
   list_intersect(
     "${SWIFT_DARWIN_MODULE_ARCHS}"            # lhs

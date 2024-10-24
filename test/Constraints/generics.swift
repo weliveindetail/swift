@@ -1057,3 +1057,33 @@ func test_mismatches_with_dependent_member_generic_arguments() {
   // expected-error@-1 {{cannot convert value of type 'Optional<Int>' to expected argument type 'Optional<Data.SomeAssociated>'}}
   // expected-note@-2 {{arguments to generic parameter 'Wrapped' ('Int' and 'Data.SomeAssociated') are expected to be equal}}
 }
+
+extension Dictionary where Value == Any { // expected-note {{where 'Value' = 'any P'}}
+  func compute() {}
+}
+
+do {
+  struct S {
+    var test: [String: any P] = [:]
+  }
+
+  func test_existential_mismatch(s: S) {
+    s.test.compute()
+    // expected-error@-1 {{referencing instance method 'compute()' on 'Dictionary' requires the types 'any P' and 'Any' be equivalent}}
+  }
+}
+
+// https://github.com/swiftlang/swift/issues/77003
+do {
+  func f<T, U>(_: T.Type, _ fn: (T) -> U?, _: (U) -> ()) {}
+
+  struct Task<E> {
+    init(_: () -> ()) where E == Never {}
+    init(_: () throws -> ()) where E == Error {}
+  }
+
+  func test(x: Int?.Type) {
+      // Note that it's important that Task stays unused, using `_ = ` changes constraint generation behavior.
+      f(x, { $0 }, { _ in Task {} }) // expected-warning {{result of 'Task<E>' initializer is unused}}
+  }
+}

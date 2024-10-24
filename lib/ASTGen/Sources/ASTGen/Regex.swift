@@ -12,6 +12,8 @@
 
 import ASTBridging
 import BasicBridging
+import SwiftDiagnostics
+import SwiftSyntax
 
 #if canImport(_CompilerRegexParser)
 @_spi(CompilerInterface) import _CompilerRegexParser

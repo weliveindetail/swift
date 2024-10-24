@@ -2,7 +2,9 @@
 // RUN:   -verify \
 // RUN:   -sil-verify-all \
 // RUN:   -module-name test \
-// RUN:   -enable-experimental-feature NonescapableTypes
+// RUN:   -enable-experimental-feature NonescapableTypes \
+// RUN:   -disable-experimental-parser-round-trip
+// FIXME: Remove '-disable-experimental-parser-round-trip' (rdar://137636751).
 
 // REQUIRES: asserts
 // REQUIRES: swift_in_compiler
@@ -10,7 +12,8 @@
 // Simply test that it is possible for a module to define a pseudo-Optional type without triggering any compiler errors.
 
 public protocol ExpressibleByNilLiteral: ~Copyable & ~Escapable {
-  init(nilLiteral: ()) -> dependsOn(immortal) Self
+  @lifetime(immortal)
+  init(nilLiteral: ()) 
 }
 
 @frozen
@@ -29,7 +32,8 @@ extension Nillable: BitwiseCopyable where Wrapped: BitwiseCopyable { }
 
 extension Nillable: ExpressibleByNilLiteral where Wrapped: ~Copyable & ~Escapable {
   @_transparent
-  public init(nilLiteral: ()) -> dependsOn(immortal) Self {
+  @lifetime(immortal)
+  public init(nilLiteral: ()) {
     self = .none
   }
 }
@@ -37,6 +41,20 @@ extension Nillable: ExpressibleByNilLiteral where Wrapped: ~Copyable & ~Escapabl
 extension Nillable where Wrapped: ~Copyable & ~Escapable {
   @_transparent
   public init(_ some: consuming Wrapped) { self = .some(some) }
+}
+
+extension Nillable where Wrapped: ~Escapable {
+  // Requires local variable analysis over switch_enum_addr.
+  public func map<E: Error, U: ~Copyable>(
+    _ transform: (Wrapped) throws(E) -> U
+  ) throws(E) -> U? {
+    switch self {
+    case .some(let y):
+      return .some(try transform(y))
+    case .none:
+      return .none
+    }
+  }
 }
 
 extension Nillable where Wrapped: ~Copyable {

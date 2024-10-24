@@ -103,8 +103,6 @@ private:
 
   bool canUseFromInline(SILFunction *func);
 
-  bool shouldSerialize(SILFunction *F);
-
   void serializeFunction(SILFunction *function,
                    const FunctionFlags &canSerializeFlags);
 
@@ -134,21 +132,21 @@ private:
 class InstructionVisitor : public SILCloner<InstructionVisitor> {
   friend class SILCloner<InstructionVisitor>;
   friend class SILInstructionVisitor<InstructionVisitor>;
+  friend class CrossModuleOptimization;
 
 private:
   CrossModuleOptimization &CMS;
-  SILInstruction *result = nullptr;
 
 public:
-  InstructionVisitor(SILInstruction *I, CrossModuleOptimization &CMS) :
-    SILCloner(*I->getFunction()), CMS(CMS) {
-    Builder.setInsertionPoint(I);
-  }
+  InstructionVisitor(SILFunction &F, CrossModuleOptimization &CMS) :
+    SILCloner(F), CMS(CMS) {}
 
   SILType remapType(SILType Ty) {
     if (Ty.hasLocalArchetype()) {
-      Ty = Ty.subst(getBuilder().getModule(), Functor, Functor,
-                    CanGenericSignature());
+      Ty = Ty.subst(getBuilder().getModule(),
+                    Functor, Functor, CanGenericSignature(),
+                    SubstFlags::SubstitutePrimaryArchetypes |
+                    SubstFlags::SubstituteLocalArchetypes);
     }
 
     CMS.makeTypeUsableFromInline(Ty.getASTType());
@@ -156,36 +154,35 @@ public:
   }
 
   CanType remapASTType(CanType Ty) {
-    if (Ty->hasLocalArchetype())
-      Ty = Ty.subst(Functor, Functor)->getCanonicalType();
+    if (Ty->hasLocalArchetype()) {
+      Ty = Ty.subst(Functor, Functor,
+                    SubstFlags::SubstitutePrimaryArchetypes |
+                    SubstFlags::SubstituteLocalArchetypes)->getCanonicalType();
+    }
 
     CMS.makeTypeUsableFromInline(Ty);
     return Ty;
   }
 
   SubstitutionMap remapSubstitutionMap(SubstitutionMap Subs) {
-    if (Subs.hasLocalArchetypes())
-      Subs = Subs.subst(Functor, Functor);
+    if (Subs.getRecursiveProperties().hasLocalArchetype()) {
+      Subs = Subs.subst(Functor, Functor,
+                        SubstFlags::SubstitutePrimaryArchetypes |
+                        SubstFlags::SubstituteLocalArchetypes);
+    }
 
     CMS.makeSubstUsableFromInline(Subs);
     return Subs;
   }
 
   void postProcess(SILInstruction *Orig, SILInstruction *Cloned) {
-    result = Cloned;
     SILCloner<InstructionVisitor>::postProcess(Orig, Cloned);
+    Cloned->eraseFromParent();
   }
 
   SILValue getMappedValue(SILValue Value) { return Value; }
 
   SILBasicBlock *remapBasicBlock(SILBasicBlock *BB) { return BB; }
-
-  static void makeTypesUsableFromInline(SILInstruction *I,
-                                        CrossModuleOptimization &CMS) {
-    InstructionVisitor visitor(I, CMS);
-    visitor.visit(I);
-    visitor.result->eraseFromParent();
-  }
 };
 
 static bool isPackageCMOEnabled(ModuleDecl *mod) {
@@ -301,43 +298,53 @@ void CrossModuleOptimization::serializeFunctionsInModule(SILPassManager *manager
 }
 
 void CrossModuleOptimization::serializeWitnessTablesInModule() {
-  if (!isPackageCMOEnabled(M.getSwiftModule()))
+  if (!isPackageCMOEnabled(M.getSwiftModule()) && !everything)
     return;
 
   for (auto &wt : M.getWitnessTables()) {
-    if (wt.getSerializedKind() != getRightSerializedKind(M) &&
-        hasPublicOrPackageVisibility(wt.getLinkage(), /*includePackage*/ true)) {
-      auto unserializedWTMethodRange = llvm::make_filter_range(
-          wt.getEntries(), [&](const SILWitnessTable::Entry &entry) {
-            return entry.getKind() == SILWitnessTable::Method &&
-                   entry.getMethodWitness().Witness->getSerializedKind() !=
-                       getRightSerializedKind(M);
-          });
-      // In Package CMO, we try serializing witness thunks that
-      // are private if they don't contain hidden or private
-      // references. If they are serialized, they are set to
-      // a shared linkage. If they can't be serialized, we set
-      // the linkage to package so that the witness table itself
-      // can still be serialized, thus giving a chance for entires
-      // that _are_ serialized to be accessed directly.
-      for (const SILWitnessTable::Entry &entry: unserializedWTMethodRange) {
-        if (entry.getMethodWitness().Witness->getLinkage() == SILLinkage::Private)
-          entry.getMethodWitness().Witness->setLinkage(SILLinkage::Package);
+    if (wt.getSerializedKind() == getRightSerializedKind(M))
+      continue;
+
+    if (!hasPublicOrPackageVisibility(wt.getLinkage(), /*includePackage*/ true) && !everything)
+      continue;
+
+    bool containsInternal = false;
+
+    for (const SILWitnessTable::Entry &entry : wt.getEntries()) {
+      if (entry.getKind() != SILWitnessTable::Method)
+        continue;
+
+      SILFunction *witness = entry.getMethodWitness().Witness;
+      if (!witness)
+        continue;
+
+      if (everything) {
+        makeFunctionUsableFromInline(witness);
+      } else {
+        assert(isPackageCMOEnabled(M.getSwiftModule()));
+
+        // In Package CMO, we try serializing witness thunks that
+        // are private if they don't contain hidden or private
+        // references. If they are serialized, they are set to
+        // a shared linkage. If they can't be serialized, we set
+        // the linkage to package so that the witness table itself
+        // can still be serialized, thus giving a chance for entires
+        // that _are_ serialized to be accessed directly.
+        if (witness->getSerializedKind() != getRightSerializedKind(M) &&
+            witness->getLinkage() == SILLinkage::Private) {
+          witness->setLinkage(SILLinkage::Package);
+        }
       }
 
-      bool containsInternal = llvm::any_of(
-          wt.getEntries(), [&](const SILWitnessTable::Entry &entry) {
-            return entry.getKind() == SILWitnessTable::Method &&
-                   !entry.getMethodWitness()
-                        .Witness->hasValidLinkageForFragileRef(
-                            getRightSerializedKind(M));
-          });
-      // FIXME: This check shouldn't be necessary but added as a caution
-      // to ensure we don't serialize witness table if it contains an
-      // internal entry.
-      if (!containsInternal)
-        wt.setSerializedKind(getRightSerializedKind(M));
+      if (!witness->hasValidLinkageForFragileRef(getRightSerializedKind(M)))
+          containsInternal = true;
     }
+
+    // FIXME: This check shouldn't be necessary but added as a caution
+    // to ensure we don't serialize witness table if it contains an
+    // internal entry.
+    if (!containsInternal)
+      wt.setSerializedKind(getRightSerializedKind(M));
   }
 }
 
@@ -420,9 +427,33 @@ bool CrossModuleOptimization::canSerializeFunction(
       return false;
   }
 
-  // Ask the heuristic.
-  if (!shouldSerialize(function))
+  if (function->hasSemanticsAttr("optimize.no.crossmodule"))
     return false;
+
+  // If package-cmo is enabled, we don't want to limit inlining
+  // or should at least increase the size limit.
+  bool skipSizeLimitCheck = isPackageCMOEnabled(M.getSwiftModule());
+
+  if (!conservative) {
+    // The basic heuristic: serialize all generic functions, because it makes a
+    // huge difference if generic functions can be specialized or not.
+    if (function->getLoweredFunctionType()->isPolymorphic())
+      skipSizeLimitCheck = true;
+    if (function->getLinkage() == SILLinkage::Shared)
+      skipSizeLimitCheck = true;
+  }
+
+  if (!skipSizeLimitCheck) {
+    // Also serialize "small" non-generic functions.
+    int size = 0;
+    for (SILBasicBlock &block : *function) {
+      for (SILInstruction &inst : block) {
+        size += (int)instructionInlineCost(inst);
+        if (size >= CMOFunctionSizeLimit)
+          return false;
+      }
+    }
+  }
 
   // Check if any instruction prevents serializing the function.
   for (SILBasicBlock &block : *function) {
@@ -660,45 +691,6 @@ bool CrossModuleOptimization::canUseFromInline(SILFunction *function) {
   return true;
 }
 
-/// Decide whether to serialize a function.
-bool CrossModuleOptimization::shouldSerialize(SILFunction *function) {
-  // Check if we already handled this function before.
-  if (isSerializedWithRightKind(M, function))
-    return false;
-
-  if (everything)
-    return true;
-
-  if (function->hasSemanticsAttr("optimize.no.crossmodule"))
-    return false;
-
-  if (!conservative) {
-    // The basic heuristic: serialize all generic functions, because it makes a
-    // huge difference if generic functions can be specialized or not.
-    if (function->getLoweredFunctionType()->isPolymorphic())
-      return true;
-
-    if (function->getLinkage() == SILLinkage::Shared)
-      return true;
-  }
-
-  // If package-cmo is enabled, we don't want to limit inlining
-  // or should at least increase the cap.
-  if (!M.getSwiftModule()->serializePackageEnabled()) {
-    // Also serialize "small" non-generic functions.
-    int size = 0;
-    for (SILBasicBlock &block : *function) {
-      for (SILInstruction &inst : block) {
-        size += (int)instructionInlineCost(inst);
-        if (size >= CMOFunctionSizeLimit)
-          return false;
-      }
-    }
-  }
-
-  return true;
-}
-
 /// Serialize \p function and recursively all referenced functions which are
 /// marked in \p canSerializeFlags.
 void CrossModuleOptimization::serializeFunction(SILFunction *function,
@@ -721,12 +713,16 @@ void CrossModuleOptimization::serializeFunction(SILFunction *function,
   }
   function->setSerializedKind(getRightSerializedKind(M));
 
+  InstructionVisitor visitor(*function, *this);
   for (SILBasicBlock &block : *function) {
     for (SILInstruction &inst : block) {
-      InstructionVisitor::makeTypesUsableFromInline(&inst, *this);
+      visitor.getBuilder().setInsertionPoint(&inst);
+      visitor.visit(&inst);
       serializeInstruction(&inst, canSerializeFlags);
     }
   }
+
+  M.reclaimUnresolvedLocalArchetypeDefinitions();
 }
 
 /// Prepare \p inst for serialization.
@@ -934,9 +930,15 @@ void CrossModuleOptimization::makeSubstUsableFromInline(
 class CrossModuleOptimizationPass: public SILModuleTransform {
   void run() override {
     auto &M = *getModule();
-    if (M.getSwiftModule()->isResilient() &&
-        !M.getSwiftModule()->serializePackageEnabled())
+    if (M.getSwiftModule()->serializePackageEnabled()) {
+      assert(M.getSwiftModule()->isResilient() &&
+             "Package CMO requires library-evolution");
+    } else if (M.getSwiftModule()->isResilient()) {
+      // If no Package CMO flags are passed and library
+      // evolution is enabled, just return.
       return;
+    }
+
     if (!M.isWholeModule())
       return;
 
@@ -960,6 +962,9 @@ class CrossModuleOptimizationPass: public SILModuleTransform {
         M.getOptions().CMOMode == swift::CrossModuleOptimizationMode::Off) {
       return;
     }
+
+    if (isPackageCMOEnabled(M.getSwiftModule()))
+      assert(conservative && "Package CMO requires conservative CMO mode");
 
     CrossModuleOptimization CMO(M, conservative, everything);
     CMO.serializeFunctionsInModule(PM);

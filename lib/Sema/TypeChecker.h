@@ -174,6 +174,14 @@ inline NameLookupOptions operator|(NameLookupFlags flag1,
 /// Default options for member name lookup.
 const NameLookupOptions defaultMemberLookupOptions;
 
+/// Default options for member name lookup in the constraint solver.
+/// Overloads which come from modules that have not been imported should be
+/// deprioritized by ranking and diagnosed by MiscDiagnostics, so we allow
+/// them to be found in constraint solver lookups to improve diagnostics
+/// overall.
+const NameLookupOptions defaultConstraintSolverMemberLookupOptions(
+    NameLookupFlags::IgnoreMissingImports);
+
 /// Default options for member type lookup.
 const NameLookupOptions defaultMemberTypeLookupOptions;
 
@@ -459,11 +467,6 @@ void typeCheckASTNode(ASTNode &node, DeclContext *DC,
 /// value if an error occurred while type checking the transformed body.
 std::optional<BraceStmt *> applyResultBuilderBodyTransform(FuncDecl *func,
                                                            Type builderType);
-
-/// Find the return statements within the body of the given function.
-std::vector<ReturnStmt *> findReturnStatements(AnyFunctionRef fn);
-
-bool typeCheckClosureBody(ClosureExpr *closure);
 
 bool typeCheckTapBody(TapExpr *expr, DeclContext *DC);
 
@@ -990,16 +993,23 @@ bool diagnoseConformanceExportability(SourceLoc loc,
 /// is sufficient to safely conform to the requirement in the context
 /// the provided conformance. On return, requiredAvailability holds th
 /// availability levels required for conformance.
-bool
-isAvailabilitySafeForConformance(ProtocolDecl *proto, ValueDecl *requirement,
-                                 ValueDecl *witness, DeclContext *dc,
-                                 AvailabilityContext &requiredAvailability);
+bool isAvailabilitySafeForConformance(
+    const ProtocolDecl *proto, const ValueDecl *requirement,
+    const ValueDecl *witness, const DeclContext *dc,
+    AvailabilityRange &requiredAvailability);
+
+/// Returns the most refined `AvailabilityContext` for the given location.
+/// If `MostRefined` is not `nullptr`, it will be set to the most refined TRC
+/// that contains the given location.
+AvailabilityContext
+availabilityAtLocation(SourceLoc loc, const DeclContext *DC,
+                       const TypeRefinementContext **MostRefined = nullptr);
 
 /// Returns an over-approximation of the range of operating system versions
 /// that could the passed-in location could be executing upon for
 /// the target platform. If MostRefined != nullptr, set to the most-refined
 /// TRC found while approximating.
-AvailabilityContext overApproximateAvailabilityAtLocation(
+AvailabilityRange overApproximateAvailabilityAtLocation(
     SourceLoc loc, const DeclContext *DC,
     const TypeRefinementContext **MostRefined = nullptr);
 
@@ -1014,64 +1024,48 @@ TypeRefinementContext *getOrBuildTypeRefinementContext(SourceFile *SF);
 /// Returns a diagnostic indicating why the declaration cannot be annotated
 /// with an @available() attribute indicating it is potentially unavailable
 /// or None if this is allowed.
-std::optional<Diag<>>
+std::optional<Diagnostic>
 diagnosticIfDeclCannotBePotentiallyUnavailable(const Decl *D);
 
 /// Returns a diagnostic indicating why the declaration cannot be annotated
 /// with an @available() attribute indicating it is unavailable or None if this
 /// is allowed.
-std::optional<Diag<>> diagnosticIfDeclCannotBeUnavailable(const Decl *D);
+std::optional<Diagnostic> diagnosticIfDeclCannotBeUnavailable(const Decl *D);
 
 /// Same as \c checkDeclarationAvailability but doesn't give a reason for
 /// unavailability.
 bool isDeclarationUnavailable(
     const Decl *D, const DeclContext *referenceDC,
-    llvm::function_ref<AvailabilityContext()> getAvailabilityContext);
+    llvm::function_ref<AvailabilityRange()> getAvailabilityRange);
 
 /// Checks whether a declaration should be considered unavailable when
-/// referred to at the given location and, if so, returns the reason why the
-/// declaration is unavailable. Returns None is the declaration is
-/// definitely available.
-std::optional<UnavailabilityReason>
+/// referred to at the given location and, if so, returns the unmet required
+/// version range. Returns None is the declaration is definitely available.
+std::optional<AvailabilityRange>
 checkDeclarationAvailability(const Decl *D, const ExportContext &Where);
 
 /// Checks whether a conformance should be considered unavailable when
-/// referred to at the given location and, if so, returns the reason why the
-/// declaration is unavailable. Returns None is the declaration is
-/// definitely available.
-std::optional<UnavailabilityReason>
+/// referred to at the given location and, if so, returns the unmet required
+/// version range. Returns None is the declaration is definitely available.
+std::optional<AvailabilityRange>
 checkConformanceAvailability(const RootProtocolConformance *Conf,
                              const ExtensionDecl *Ext,
                              const ExportContext &Where);
+
+bool checkAvailability(SourceRange ReferenceRange,
+                       AvailabilityRange RequiredAvailability,
+                       Diag<StringRef, llvm::VersionTuple> Diag,
+                       const DeclContext *ReferenceDC);
+
+void checkConcurrencyAvailability(SourceRange ReferenceRange,
+                                  const DeclContext *ReferenceDC);
+/// @}
 
 /// Checks an "ignored" expression to see if it's okay for it to be ignored.
 ///
 /// An ignored expression is one that is not nested within a larger
 /// expression or statement.
 void checkIgnoredExpr(Expr *E);
-
-// Emits a diagnostic for a reference to a declaration that is potentially
-// unavailable at the given source location. Returns true if an error diagnostic
-// was emitted.
-bool diagnosePotentialUnavailability(const ValueDecl *D,
-                                     SourceRange ReferenceRange,
-                                     const DeclContext *ReferenceDC,
-                                     const UnavailabilityReason &Reason,
-                                     bool WarnBeforeDeploymentTarget);
-
-// Emits a diagnostic for a protocol conformance that is potentially
-// unavailable at the given source location.
-void diagnosePotentialUnavailability(const RootProtocolConformance *rootConf,
-                                     const ExtensionDecl *ext,
-                                     SourceLoc loc,
-                                     const DeclContext *dc,
-                                     const UnavailabilityReason &reason);
-
-void
-diagnosePotentialUnavailability(SourceRange ReferenceRange,
-                                Diag<StringRef, llvm::VersionTuple> Diag,
-                                const DeclContext *ReferenceDC,
-                                const UnavailabilityReason &Reason);
 
 /// Type check a 'distributed actor' declaration.
 void checkDistributedActor(SourceFile *SF, NominalTypeDecl *decl);
@@ -1080,36 +1074,6 @@ void checkDistributedActor(SourceFile *SF, NominalTypeDecl *decl);
 ///
 /// Returns `true` if there was an error.
 bool checkDistributedFunc(FuncDecl *func);
-
-bool checkAvailability(SourceRange ReferenceRange,
-                       AvailabilityContext Availability,
-                       Diag<StringRef, llvm::VersionTuple> Diag,
-                       const DeclContext *ReferenceDC);
-
-void checkConcurrencyAvailability(SourceRange ReferenceRange,
-                                  const DeclContext *ReferenceDC);
-
-/// Emits a diagnostic for a reference to a storage accessor that is
-/// potentially unavailable.
-void diagnosePotentialAccessorUnavailability(
-    const AccessorDecl *Accessor, SourceRange ReferenceRange,
-    const DeclContext *ReferenceDC, const UnavailabilityReason &Reason,
-    bool ForInout);
-
-/// Returns the availability attribute indicating deprecation if the
-/// declaration is deprecated or null otherwise.
-const AvailableAttr *getDeprecated(const Decl *D);
-
-/// Emits a diagnostic for a reference to a declaration that is deprecated.
-void diagnoseIfDeprecated(SourceRange SourceRange, const ExportContext &Where,
-                          const ValueDecl *DeprecatedDecl, const Expr *Call);
-
-/// Emits a diagnostic for a reference to a conformance that is deprecated.
-bool diagnoseIfDeprecated(SourceLoc loc,
-                          const RootProtocolConformance *rootConf,
-                          const ExtensionDecl *ext,
-                          const ExportContext &where);
-/// @}
 
 /// If `LangOptions::DebugForbidTypecheckPrefixes` is set and the given decl
 /// name starts with any of those prefixes, an llvm fatal error is triggered.
@@ -1174,8 +1138,8 @@ bool diagnoseSelfAssignment(const Expr *E);
 /// some reason it could not.
 bool getDefaultGenericArgumentsString(
     SmallVectorImpl<char> &buf, const GenericTypeDecl *typeDecl,
-    llvm::function_ref<Type(const GenericTypeParamDecl *)> getPreferredType =
-        [](const GenericTypeParamDecl *) { return Type(); });
+    llvm::function_ref<Type(const GenericTypeParamType *)> getPreferredType =
+        [](const GenericTypeParamType *) { return Type(); });
 
 /// Attempt to omit needless words from the name of the given declaration.
 std::optional<DeclName> omitNeedlessWords(AbstractFunctionDecl *afd);
@@ -1433,7 +1397,7 @@ LabeledStmt *findBreakOrContinueStmtTarget(ASTContext &ctx,
 /// Check the correctness of a 'fallthrough' statement.
 ///
 /// \returns true if an error occurred.
-bool checkFallthroughStmt(DeclContext *dc, FallthroughStmt *stmt);
+bool checkFallthroughStmt(FallthroughStmt *stmt);
 
 /// Check for restrictions on the use of the @unknown attribute on a
 /// case statement.

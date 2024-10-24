@@ -664,7 +664,7 @@ public:
   const llvm::Triple VariantTriple;
   std::unique_ptr<llvm::TargetMachine> TargetMachine;
   ModuleDecl *getSwiftModule() const;
-  AvailabilityContext getAvailabilityContext() const;
+  AvailabilityRange getAvailabilityRange() const;
   Lowering::TypeConverter &getSILTypes() const;
   SILModule &getSILModule() const { return IRGen.SIL; }
   const IRGenOptions &getOptions() const { return IRGen.Opts; }
@@ -1119,8 +1119,10 @@ public:
 
   TypeExpansionContext getMaximalTypeExpansionContext() const;
 
-  bool isResilientConformance(const NormalProtocolConformance *conformance);
-  bool isResilientConformance(const RootProtocolConformance *root);
+  bool isResilientConformance(const NormalProtocolConformance *conformance,
+                              bool disableOptimizations = false);
+  bool isResilientConformance(const RootProtocolConformance *root,
+                              bool disableOptimizations = false);
   bool isDependentConformance(const RootProtocolConformance *conformance);
 
   Alignment getCappedAlignment(Alignment alignment);
@@ -1368,7 +1370,7 @@ private:
     unsigned numExtraInhabitants;
     unsigned align: 16;
     unsigned pod: 1;
-    unsigned bitwiseTakable: 1;
+    unsigned bitwiseTakable: 2;
   };
   friend struct ::llvm::DenseMapInfo<swift::irgen::IRGenModule::FixedLayoutKey>;
   llvm::DenseMap<FixedLayoutKey, llvm::Constant *> PrivateFixedLayouts;
@@ -1584,6 +1586,7 @@ public:
       StackProtectorMode stackProtect = StackProtectorMode::NoStackProtector);
   void setHasNoFramePointer(llvm::AttrBuilder &Attrs);
   void setHasNoFramePointer(llvm::Function *F);
+  void setMustHaveFramePointer(llvm::Function *F);
   llvm::AttributeList constructInitialAttributes();
   StackProtectorMode shouldEmitStackProtector(SILFunction *f);
 
@@ -1658,7 +1661,8 @@ public:
   llvm::Constant *getAddrOfMethodDescriptor(SILDeclRef declRef,
                                             ForDefinition_t forDefinition);
   void emitNonoverriddenMethodDescriptor(const SILVTable *VTable,
-                                         SILDeclRef declRef);
+                                         SILDeclRef declRef,
+                                         ClassDecl *classDecl);
 
   Address getAddrOfEnumCase(EnumElementDecl *Case,
                             ForDefinition_t forDefinition);
@@ -1819,6 +1823,16 @@ public:
                        bool isDynamicallyReplaceableImplementation = false,
                        bool shouldCallPreviousImplementation = false);
 
+  llvm::Function *
+  getAddrOfWitnessTableProfilingThunk(llvm::Function *witness,
+                                      const NormalProtocolConformance &C);
+
+  llvm::Function *
+  getAddrOfVTableProfilingThunk(llvm::Function *f, ClassDecl *decl);
+
+  llvm::Function *getOrCreateProfilingThunk(llvm::Function *f,
+                                            StringRef prefix);
+
   void emitDynamicReplacementOriginalFunctionThunk(SILFunction *f);
 
   llvm::Function *getAddrOfContinuationPrototype(CanSILFunctionType fnType);
@@ -1837,7 +1851,7 @@ public:
                                                const NormalProtocolConformance *C,
                                                CanType conformingType,
                                                ForDefinition_t forDefinition);
-  llvm::Constant *getAddrOfWitnessTable(const RootProtocolConformance *C,
+  llvm::Constant *getAddrOfWitnessTable(const ProtocolConformance *C,
                                       ConstantInit definition = ConstantInit());
   llvm::Constant *getAddrOfWitnessTablePattern(
                                       const NormalProtocolConformance *C,

@@ -40,6 +40,7 @@
 #include "swift/Basic/SourceManager.h"
 #include "swift/Basic/Statistic.h"
 #include "swift/ClangImporter/ClangImporterRequests.h"
+#include "swift/ClangImporter/ClangModule.h"
 #include "swift/Parse/Lexer.h"
 #include "swift/Strings.h"
 #include "clang/AST/DeclObjC.h"
@@ -1718,6 +1719,15 @@ SmallVector<MacroDecl *, 1> namelookup::lookupMacros(DeclContext *dc,
         ctx.evaluator, UnqualifiedLookupRequest{moduleLookupDesc}, {});
     auto foundTypeDecl = moduleLookup.getSingleTypeResult();
     auto *moduleDecl = dyn_cast_or_null<ModuleDecl>(foundTypeDecl);
+
+    // When resolving macro names for imported entities, we look for any
+    // loaded module.
+    if (!moduleDecl && isa<ClangModuleUnit>(moduleScopeDC) &&
+        ctx.LangOpts.hasFeature(Feature::MacrosOnImports)) {
+      moduleDecl = ctx.getLoadedModule(moduleName.getBaseIdentifier());
+      moduleScopeDC = moduleDecl;
+    }
+
     if (!moduleDecl)
       return {};
 
@@ -2325,8 +2335,7 @@ static bool missingImportForMemberDecl(const DeclContext *dc, ValueDecl *decl) {
   if (!ctx.LangOpts.hasFeature(Feature::MemberImportVisibility))
     return false;
 
-  auto declModule = decl->getDeclContext()->getParentModule();
-  return !ctx.getImportCache().isImportedBy(declModule, dc);
+  return !dc->isDeclImported(decl);
 }
 
 /// Determine whether the given declaration is an acceptable lookup
@@ -2502,6 +2511,11 @@ bool DeclContext::lookupQualified(Type type,
 
   return lookupQualified(nominalTypesToLookInto, member,
                          loc, options, decls);
+}
+
+bool DeclContext::isDeclImported(const Decl *decl) const {
+  auto declModule = decl->getModuleContextForNameLookup();
+  return getASTContext().getImportCache().isImportedBy(declModule, this);
 }
 
 static void installPropertyWrapperMembersIfNeeded(NominalTypeDecl *target,
@@ -3153,6 +3167,7 @@ directReferencesForTypeRepr(Evaluator &evaluator, ASTContext &ctx,
   case TypeReprKind::Existential:
   case TypeReprKind::LifetimeDependent:
   case TypeReprKind::Sending:
+  case TypeReprKind::Integer:
     return result;
 
   case TypeReprKind::Fixed:
@@ -3623,10 +3638,13 @@ createOpaqueParameterGenericParams(GenericContext *genericContext, GenericParamL
     for (auto repr : typeReprs) {
    
       // Allocate a new generic parameter to represent this opaque type.
+      //
+      // Note: Opaque parameters are always treated as
+      // GenericTypeParamKind::Type right now. The opaque type representation
+      // indicates it's an opaque parameter.
       auto *gp = GenericTypeParamDecl::createImplicit(
           dc, Identifier(), GenericTypeParamDecl::InvalidDepth, index++,
-          /*isParameterPack*/ false, /*isOpaqueType*/ true, repr,
-          /*nameLoc*/ repr->getStartLoc());
+          GenericTypeParamKind::Type, repr, /*nameLoc*/ repr->getStartLoc());
 
       // Use the underlying constraint as the constraint on the generic parameter.
       //  The underlying constraint is only present for OpaqueReturnTypeReprs
@@ -3656,7 +3674,7 @@ GenericParamListRequest::evaluate(Evaluator &evaluator, GenericContext *value) c
     // Builtin.TheTupleType has a single pack generic parameter: <each Element>
     auto *genericParam = GenericTypeParamDecl::createImplicit(
         tupleDecl->getDeclContext(), ctx.Id_Element, /*depth*/ 0, /*index*/ 0,
-        /*isParameterPack*/ true);
+        GenericTypeParamKind::Pack);
 
     return GenericParamList::create(ctx, SourceLoc(), genericParam,
                                     SourceLoc());
@@ -3712,7 +3730,7 @@ GenericParamListRequest::evaluate(Evaluator &evaluator, GenericContext *value) c
     auto &ctx = value->getASTContext();
     auto selfId = ctx.Id_Self;
     auto selfDecl = GenericTypeParamDecl::createImplicit(
-        proto, selfId, /*depth*/ 0, /*index*/ 0);
+        proto, selfId, /*depth*/ 0, /*index*/ 0, GenericTypeParamKind::Type);
     auto protoType = proto->getDeclaredInterfaceType();
     InheritedEntry selfInherited[1] = {
       InheritedEntry(TypeLoc::withoutLoc(protoType)) };

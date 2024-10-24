@@ -51,6 +51,7 @@ enum class ImplMetatypeRepresentation {
 enum class ImplCoroutineKind {
   None,
   YieldOnce,
+  YieldOnce2,
   YieldMany,
 };
 
@@ -877,7 +878,9 @@ protected:
     case NodeKind::DependentGenericParamType: {
       auto depth = Node->getChild(0)->getIndex();
       auto index = Node->getChild(1)->getIndex();
-      return Builder.createGenericTypeParameterType(depth, index);
+      return TypeLookupErrorOr<BuiltType>(
+          Builder.createGenericTypeParameterType(depth, index),
+          /*ignoreValueCheck*/ true);
     }
     case NodeKind::EscapingObjCBlock:
     case NodeKind::ObjCBlock:
@@ -1095,6 +1098,8 @@ protected:
             return MAKE_NODE_TYPE_ERROR0(child, "expected text");
           if (child->getText() == "yield_once") {
             coroutineKind = ImplCoroutineKind::YieldOnce;
+          } else if (child->getText() == "yield_once_2") {
+            coroutineKind = ImplCoroutineKind::YieldOnce2;
           } else if (child->getText() == "yield_many") {
             coroutineKind = ImplCoroutineKind::YieldMany;
           } else
@@ -1515,6 +1520,15 @@ protected:
       
       return Builder.resolveOpaqueType(descriptor, genericArgs, ordinal);
     }
+
+    case NodeKind::Integer: {
+      return Builder.createIntegerType((intptr_t)Node->getIndex());
+    }
+
+    case NodeKind::NegativeInteger: {
+      return Builder.createNegativeIntegerType((intptr_t)Node->getIndex());
+    }
+
     // TODO: Handle OpaqueReturnType, when we're in the middle of reconstructing
     // the defining decl
     default:

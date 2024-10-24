@@ -27,6 +27,7 @@
 #include "swift/AST/SwiftNameTranslation.h"
 #include "swift/AST/Type.h"
 #include "swift/AST/TypeVisitor.h"
+#include "swift/AST/Types.h"
 #include "swift/Basic/Assertions.h"
 #include "swift/ClangImporter/ClangImporter.h"
 #include "swift/IRGen/IRABIDetailsProvider.h"
@@ -263,6 +264,22 @@ public:
     Ty->print(os);
     os << " */";
     return ClangRepresentation::unsupported;
+  }
+
+  ClangRepresentation
+  visitExistentialType(ExistentialType *ty,
+                       std::optional<OptionalTypeKind> optionalKind,
+                       bool isInOutParam) {
+    if (ty->isObjCExistentialType()) {
+      declPrinter.withOutputStream(os).print(ty, optionalKind);
+      if (isInOutParam) {
+        os << " __strong";
+        printInoutTypeModifier();
+      }
+      return ClangRepresentation::objcxxonly;
+    }
+
+    return visitPart(ty->getConstraintType(), optionalKind, isInOutParam);
   }
 
   ClangRepresentation
@@ -592,6 +609,14 @@ static std::string encodeTypeInfo(const T &abiTypeInfo,
   return std::move(typeEncodingOS.str());
 }
 
+static bool isOptionalObjCExistential(Type ty) {
+  if (auto obj = ty->getOptionalObjectType()) {
+    if (obj->isObjCExistentialType())
+      return true;
+  }
+  return false;
+}
+
 // Returns false if the given direct type is not yet supported because
 // of its ABI.
 template <class T>
@@ -631,7 +656,8 @@ static bool printDirectReturnOrParamCType(
   // FIXME: is this "prettyfying" logic sound for multiple return values?
   if (isKnownCType(valueType, typeMapping) ||
       (Count == 1 && lastOffset.isZero() && !valueType->hasTypeParameter() &&
-       valueType->isAnyClassReferenceType())) {
+       (valueType->isAnyClassReferenceType() ||
+        isOptionalObjCExistential(valueType)))) {
     prettifiedValuePrinter();
     return true;
   }
@@ -964,8 +990,12 @@ ClangRepresentation DeclAndTypeClangFunctionPrinter::printFunctionSignature(
       // Emit 'void' in an empty parameter list for C function declarations.
       functionSignatureOS << "void";
     functionSignatureOS << ')';
-    if (!resultingRepresentation.isUnsupported())
+    if (!resultingRepresentation.isUnsupported()) {
+      if (resultingRepresentation.isObjCxxOnly())
+        os << "#if defined(__OBJC__)\n";
+      os << "SWIFT_EXTERN ";
       os << functionSignatureOS.str();
+    }
     return resultingRepresentation;
   }
 
@@ -1010,8 +1040,12 @@ ClangRepresentation DeclAndTypeClangFunctionPrinter::printFunctionSignature(
     ClangSyntaxPrinter(functionSignatureOS)
         .printSymbolUSRAttribute(
             modifiers.symbolUSROverride ? modifiers.symbolUSROverride : FD);
-  if (!resultingRepresentation.isUnsupported())
+  if (!resultingRepresentation.isUnsupported()) {
+    if (resultingRepresentation.isObjCxxOnly() &&
+        outputLang == OutputLanguageMode::Cxx)
+      os << "#if defined(__OBJC__)\n";
     os << functionSignatureOS.str();
+  }
   return resultingRepresentation;
 }
 
@@ -1043,6 +1077,12 @@ void DeclAndTypeClangFunctionPrinter::printCxxToCFunctionParameterUse(
       return;
     }
 
+    if (type->isObjCExistentialType() || isOptionalObjCExistential(type)) {
+      if (isInOut)
+        os << '&';
+      namePrinter();
+      return;
+    }
     if (auto *classDecl = type->getClassOrBoundGenericClass()) {
       if (classDecl->hasClangNode()) {
         if (isInOut)
@@ -1057,9 +1097,11 @@ void DeclAndTypeClangFunctionPrinter::printCxxToCFunctionParameterUse(
 
     if (auto *decl = type->getNominalOrBoundGenericNominal()) {
       if ((isa<StructDecl>(decl) || isa<EnumDecl>(decl))) {
-        if (!directTypeEncoding.empty())
-          os << cxx_synthesis::getCxxImplNamespaceName()
+        if (!directTypeEncoding.empty()) {
+          ClangSyntaxPrinter(os).printBaseName(moduleContext);
+          os << "::" << cxx_synthesis::getCxxImplNamespaceName()
              << "::swift_interop_passDirect_" << directTypeEncoding << '(';
+        }
         if (decl->hasClangNode()) {
             if (!directTypeEncoding.empty())
                 os << "reinterpret_cast<const char *>(";
@@ -1298,8 +1340,11 @@ void DeclAndTypeClangFunctionPrinter::printCxxThunkBody(
   auto printCallToCFunc = [&](std::optional<StringRef> additionalParam) {
     if (indirectFunctionVar)
       os << "(* " << *indirectFunctionVar << ')';
-    else
-      os << cxx_synthesis::getCxxImplNamespaceName() << "::" << swiftSymbolName;
+    else {
+      ClangSyntaxPrinter(os).printBaseName(moduleContext);
+      os << "::" << cxx_synthesis::getCxxImplNamespaceName()
+         << "::" << swiftSymbolName;
+    }
     os << '(';
 
     bool needsComma = false;
@@ -1418,12 +1463,16 @@ void DeclAndTypeClangFunctionPrinter::printCxxThunkBody(
           [&]() { printCallToCFunc(/*additionalParam=*/std::nullopt); });
       return;
     }
-    if (auto *decl = resultTy->getNominalOrBoundGenericNominal()) {
+    if (auto *decl = resultTy->getNominalOrBoundGenericNominal();
+        decl && !resultTy->isObjCExistentialType() &&
+        !isOptionalObjCExistential(resultTy)) {
       auto valueTypeReturnThunker = [&](StringRef resultPointerName) {
         if (auto directResultType = signature.getDirectResultType()) {
           std::string typeEncoding =
               encodeTypeInfo(*directResultType, moduleContext, typeMapping);
-          os << cxx_synthesis::getCxxImplNamespaceName()
+
+          ClangSyntaxPrinter(os).printBaseName(moduleContext);
+          os << "::" << cxx_synthesis::getCxxImplNamespaceName()
              << "::swift_interop_returnDirect_" << typeEncoding << '('
              << resultPointerName << ", ";
           printCallToCFunc(std::nullopt);
@@ -1451,13 +1500,14 @@ void DeclAndTypeClangFunctionPrinter::printCxxThunkBody(
   auto nonOptResultType = resultTy->getOptionalObjectType();
   if (!nonOptResultType)
     nonOptResultType = resultTy;
-  if (auto *classDecl = nonOptResultType->getClassOrBoundGenericClass()) {
-    assert(classDecl->hasClangNode());
-    assert(isa<clang::ObjCContainerDecl>(classDecl->getClangDecl()));
+  if (auto *classDecl = nonOptResultType->getClassOrBoundGenericClass();
+      classDecl || nonOptResultType->isObjCExistentialType()) {
+    assert(!classDecl || classDecl->hasClangNode());
+    assert(!classDecl ||
+           isa<clang::ObjCContainerDecl>(classDecl->getClangDecl()));
     os << "return (__bridge_transfer ";
-    ClangSyntaxPrinter(os).printIdentifier(
-        cast<clang::NamedDecl>(classDecl->getClangDecl())->getName());
-    os << " *)(__bridge void *)";
+    declPrinter.withOutputStream(os).print(nonOptResultType);
+    os << ")(__bridge void *)";
     printCallToCFunc(/*additionalParam=*/std::nullopt);
     os << ";\n";
     return;
@@ -1568,6 +1618,8 @@ void DeclAndTypeClangFunctionPrinter::printCxxMethod(
   declAndTypePrinter.printAvailability(os, FD);
   if (!isDefinition) {
     os << ";\n";
+    if (result.isObjCxxOnly())
+      os << "#endif\n";
     return;
   }
 
@@ -1579,6 +1631,8 @@ void DeclAndTypeClangFunctionPrinter::printCxxMethod(
                     FD->getInterfaceType()->castTo<AnyFunctionType>(), isStatic,
                     dispatchInfo);
   os << "  }\n";
+  if (result.isObjCxxOnly())
+    os << "#endif\n";
 }
 
 /// Returns true if the given property name like `isEmpty` can be remapped
@@ -1641,6 +1695,8 @@ void DeclAndTypeClangFunctionPrinter::printCxxPropertyAccessorMethod(
   declAndTypePrinter.printAvailability(os, accessor->getStorage());
   if (!isDefinition) {
     os << ";\n";
+    if (result.isObjCxxOnly())
+      os << "#endif\n";
     return;
   }
   os << " {\n";
@@ -1650,6 +1706,8 @@ void DeclAndTypeClangFunctionPrinter::printCxxPropertyAccessorMethod(
                     accessor->getParameters(),
                     /*hasThrows=*/false, nullptr, isStatic, dispatchInfo);
   os << "  }\n";
+  if (result.isObjCxxOnly())
+    os << "#endif\n";
 }
 
 void DeclAndTypeClangFunctionPrinter::printCxxSubscriptAccessorMethod(
@@ -1675,6 +1733,8 @@ void DeclAndTypeClangFunctionPrinter::printCxxSubscriptAccessorMethod(
   declAndTypePrinter.printAvailability(os, accessor->getStorage());
   if (!isDefinition) {
     os << ";\n";
+    if (result.isObjCxxOnly())
+      os << "#endif\n";
     if (multiParam)
       os << "#endif // #if __cplusplus >= 202302L\n";
     return;
@@ -1686,6 +1746,8 @@ void DeclAndTypeClangFunctionPrinter::printCxxSubscriptAccessorMethod(
       accessor->getModuleContext(), resultTy, accessor->getParameters(),
       /*hasThrows=*/false, nullptr, /*isStatic=*/false, dispatchInfo);
   os << "  }\n";
+  if (result.isObjCxxOnly())
+    os << "#endif\n";
   if (multiParam)
     os << "#endif // #if __cplusplus >= 202302L\n";
 }

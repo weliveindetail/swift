@@ -21,6 +21,7 @@
 #include "swift/Demangling/Demangler.h"
 #include "swift/SIL/ApplySite.h"
 #include "swift/SIL/DynamicCasts.h"
+#include "swift/SIL/OSSALifetimeCompletion.h"
 #include "swift/SIL/SILBridging.h"
 #include "swift/SIL/SILCloner.h"
 #include "swift/SIL/SILFunction.h"
@@ -34,6 +35,7 @@
 #include "swift/SILOptimizer/Utils/CFGOptUtils.h"
 #include "swift/SILOptimizer/Utils/ConstantFolding.h"
 #include "swift/SILOptimizer/Utils/Devirtualize.h"
+#include "swift/SILOptimizer/Utils/Generics.h"
 #include "swift/SILOptimizer/Utils/InstOptUtils.h"
 #include "swift/SILOptimizer/Utils/OptimizerStatsUtils.h"
 #include "swift/SILOptimizer/Utils/SILInliner.h"
@@ -1514,6 +1516,7 @@ void SwiftPassInvocation::finishedModulePassRun() {
   endPass();
   assert(!function && transform && "not running a pass");
   assert(changeNotifications == SILAnalysis::InvalidationKind::Nothing
+         && !functionTablesChanged
          && "unhandled change notifications at end of module pass");
   transform = nullptr;
 }
@@ -1549,6 +1552,7 @@ void SwiftPassInvocation::endPass() {
 void SwiftPassInvocation::beginTransformFunction(SILFunction *function) {
   assert(!this->function && transform && "not running a pass");
   assert(changeNotifications == SILAnalysis::InvalidationKind::Nothing
+         && !functionTablesChanged
          && "change notifications not cleared");
   this->function = function;
 }
@@ -1558,6 +1562,10 @@ void SwiftPassInvocation::endTransformFunction() {
   if (changeNotifications != SILAnalysis::InvalidationKind::Nothing) {
     passManager->invalidateAnalysis(function, changeNotifications);
     changeNotifications = SILAnalysis::InvalidationKind::Nothing;
+  }
+  if (functionTablesChanged) {
+    passManager->invalidateFunctionTables();
+    functionTablesChanged = false;
   }
   function = nullptr;
   assert(numBlockSetsAllocated == 0 && "Not all BasicBlockSets deallocated");
@@ -1578,6 +1586,7 @@ void SwiftPassInvocation::endVerifyFunction() {
   assert(function);
   if (!transform) {
     assert(changeNotifications == SILAnalysis::InvalidationKind::Nothing &&
+           !functionTablesChanged &&
            "verifyication must not change the SIL of a function");
     assert(numBlockSetsAllocated == 0 && "Not all BasicBlockSets deallocated");
     assert(numNodeSetsAllocated == 0 && "Not all NodeSets deallocated");
@@ -1631,6 +1640,9 @@ void BridgedChangeNotificationHandler::notifyChanges(Kind changeKind) const {
     break;
   case Kind::effectsChanged:
     invocation->notifyChanges(SILAnalysis::InvalidationKind::Effects);
+    break;
+  case Kind::functionTablesChanged:
+    invocation->notifyFunctionTablesChanged();
     break;
   }
 }
@@ -1734,14 +1746,44 @@ bool BridgedPassContext::canMakeStaticObjectReadOnly(BridgedType type) const {
   return false;
 }
 
-swift::SILVTable * BridgedPassContext::specializeVTableForType(BridgedType type, BridgedFunction function) const {
-  return ::specializeVTableForType(type.unbridged(),
-                                   function.getFunction()->getModule(),
-                                   invocation->getTransform());
+OptionalBridgedFunction BridgedPassContext::specializeFunction(BridgedFunction function,
+                                                               BridgedSubstitutionMap substitutions) const {
+  swift::SILModule *mod = invocation->getPassManager()->getModule();
+  SILFunction *origFunc = function.getFunction();
+  SubstitutionMap subs = substitutions.unbridged();
+  ReabstractionInfo ReInfo(mod->getSwiftModule(), mod->isWholeModule(),
+                           ApplySite(), origFunc, subs, IsNotSerialized,
+                           /*ConvertIndirectToDirect=*/true,
+                           /*dropMetatypeArgs=*/false);
+
+  if (!ReInfo.canBeSpecialized()) {
+    return {nullptr};
+  }
+
+  SILOptFunctionBuilder FunctionBuilder(*invocation->getTransform());
+
+  GenericFuncSpecializer FuncSpecializer(FunctionBuilder, origFunc, subs,
+                                         ReInfo, /*isMandatory=*/true);
+  SILFunction *SpecializedF = FuncSpecializer.lookupSpecialization();
+  if (!SpecializedF) SpecializedF = FuncSpecializer.tryCreateSpecialization();
+  if (!SpecializedF || SpecializedF->getLoweredFunctionType()->hasError()) {
+    return {nullptr};
+  }
+  return {SpecializedF};
+}
+
+void BridgedPassContext::deserializeAllCallees(BridgedFunction function, bool deserializeAll) const {
+  swift::SILModule *mod = invocation->getPassManager()->getModule();
+  mod->linkFunction(function.getFunction(), deserializeAll ? SILModule::LinkingMode::LinkAll :
+                                                             SILModule::LinkingMode::LinkNormal);
 }
 
 bool BridgedPassContext::specializeClassMethodInst(BridgedInstruction cm) const {
   return ::specializeClassMethodInst(cm.getAs<ClassMethodInst>());
+}
+
+bool BridgedPassContext::specializeWitnessMethodInst(BridgedInstruction wm) const {
+  return ::specializeWitnessMethodInst(wm.getAs<WitnessMethodInst>());
 }
 
 bool BridgedPassContext::specializeAppliesInFunction(BridgedFunction function, bool isMandatory) const {
@@ -1874,9 +1916,9 @@ OptionalBridgedFunction BridgedPassContext::lookupStdlibFunction(BridgedStringRe
   return {funcBuilder.getOrCreateFunction(SILLocation(decl), declRef, NotForDefinition)};
 }
 
-OptionalBridgedFunction BridgedPassContext::lookUpNominalDeinitFunction(BridgedNominalTypeDecl nominal)  const {
+OptionalBridgedFunction BridgedPassContext::lookUpNominalDeinitFunction(BridgedDeclObj nominal)  const {
   swift::SILModule *mod = invocation->getPassManager()->getModule();
-  return {mod->lookUpMoveOnlyDeinitFunction(nominal.unbridged())};
+  return {mod->lookUpMoveOnlyDeinitFunction(nominal.getAs<swift::NominalTypeDecl>())};
 }
 
 bool BridgedPassContext::enableSimplificationFor(BridgedInstruction inst) const {
@@ -2010,9 +2052,18 @@ ClosureSpecializer_createEmptyFunctionWithSpecializedSignature(BridgedStringRef 
   return {specializedApplySiteCallee};
 }
 
-bool FullApplySite_canInline(BridgedInstruction apply) {
-  return swift::SILInliner::canInlineApplySite(
-      swift::FullApplySite(apply.unbridged()));
+bool BridgedPassContext::completeLifetime(BridgedValue value) const {
+  SILValue v = value.getSILValue();
+  SILFunction *f = v->getFunction();
+  DeadEndBlocks *deb = invocation->getPassManager()->getAnalysis<DeadEndBlocksAnalysis>()->get(f);
+  DominanceInfo *domInfo = invocation->getPassManager()->getAnalysis<DominanceAnalysis>()->get(f);
+  OSSALifetimeCompletion completion(f, domInfo, *deb);
+  auto result = completion.completeOSSALifetime(v, OSSALifetimeCompletion::Boundary::Availability);
+  return result == LifetimeCompletion::WasCompleted;
+}
+
+bool BeginApply_canInline(BridgedInstruction beginApply) {
+  return swift::SILInliner::canInlineBeginApply(beginApply.getAs<BeginApplyInst>());
 }
 
 BridgedDynamicCastResult classifyDynamicCastBridged(BridgedType sourceTy, BridgedType destTy,
@@ -2113,6 +2164,10 @@ bool BridgedCloner::isValueCloned(BridgedValue v) const {
 
 void BridgedCloner::clone(BridgedInstruction inst) {
   cloner->cloneInst(inst.unbridged());
+}
+
+void BridgedCloner::recordFoldedValue(BridgedValue origValue, BridgedValue mappedValue) {
+  cloner->recordFoldedValue(origValue.getSILValue(), mappedValue.getSILValue());
 }
 
 static BridgedUtilities::VerifyFunctionFn verifyFunctionFunction;

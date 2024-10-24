@@ -100,6 +100,7 @@ static clang::CodeGenerator *createClangCodeGenerator(ASTContext &Context,
   assert(Importer && "No clang module loader!");
   auto &ClangContext = Importer->getClangASTContext();
 
+  auto &CGTI = Importer->getTargetInfo();
   auto &CGO = Importer->getCodeGenOpts();
   CGO.OptimizationLevel = Opts.shouldOptimize() ? 3 : 0;
 
@@ -154,7 +155,7 @@ static clang::CodeGenerator *createClangCodeGenerator(ASTContext &Context,
   auto *ClangCodeGen = clang::CreateLLVMCodeGen(ClangContext.getDiagnostics(),
                                                 ModuleName, &VFS, HSI, PPO, CGO,
                                                 LLVMContext);
-  ClangCodeGen->Initialize(ClangContext);
+  ClangCodeGen->Initialize(ClangContext, CGTI);
   return ClangCodeGen;
 }
 
@@ -811,9 +812,9 @@ namespace RuntimeConstants {
 
   bool
   isDeploymentAvailabilityContainedIn(ASTContext &Context,
-                                      AvailabilityContext featureAvailability) {
+                                      AvailabilityRange featureAvailability) {
     auto deploymentAvailability =
-      AvailabilityContext::forDeploymentTarget(Context);
+        AvailabilityRange::forDeploymentTarget(Context);
     return deploymentAvailability.isContainedIn(featureAvailability);
   }
 
@@ -980,6 +981,30 @@ namespace RuntimeConstants {
 
   RuntimeAvailability ClearSensitiveAvailability(ASTContext &Context) {
     auto featureAvailability = Context.getClearSensitiveAvailability();
+    if (!isDeploymentAvailabilityContainedIn(Context, featureAvailability)) {
+      return RuntimeAvailability::ConditionallyAvailable;
+    }
+    return RuntimeAvailability::AlwaysAvailable;
+  }
+
+  RuntimeAvailability InitRawStructMetadataAvailability(ASTContext &Context) {
+    auto featureAvailability = Context.getInitRawStructMetadataAvailability();
+    if (!isDeploymentAvailabilityContainedIn(Context, featureAvailability)) {
+      return RuntimeAvailability::ConditionallyAvailable;
+    }
+    return RuntimeAvailability::AlwaysAvailable;
+  }
+
+  RuntimeAvailability InitRawStructMetadata2Availability(ASTContext &Context) {
+    auto featureAvailability = Context.getInitRawStructMetadata2Availability();
+    if (!isDeploymentAvailabilityContainedIn(Context, featureAvailability)) {
+      return RuntimeAvailability::ConditionallyAvailable;
+    }
+    return RuntimeAvailability::AlwaysAvailable;
+  }
+
+  RuntimeAvailability ValueGenericTypeAvailability(ASTContext &Context) {
+    auto featureAvailability = Context.getValueGenericTypeAvailability();
     if (!isDeploymentAvailabilityContainedIn(Context, featureAvailability)) {
       return RuntimeAvailability::ConditionallyAvailable;
     }
@@ -1337,8 +1362,8 @@ ModuleDecl *IRGenModule::getSwiftModule() const {
   return IRGen.SIL.getSwiftModule();
 }
 
-AvailabilityContext IRGenModule::getAvailabilityContext() const {
-  return AvailabilityContext::forDeploymentTarget(Context);
+AvailabilityRange IRGenModule::getAvailabilityRange() const {
+  return AvailabilityRange::forDeploymentTarget(Context);
 }
 
 Lowering::TypeConverter &IRGenModule::getSILTypes() const {
@@ -1364,6 +1389,10 @@ GeneratedModule IRGenModule::intoGeneratedModule() && {
 bool IRGenerator::canEmitWitnessTableLazily(SILWitnessTable *wt) {
   if (Opts.UseJIT)
     return false;
+
+  // witness tables are always emitted lazily in embedded swift.
+  if (SIL.getASTContext().LangOpts.hasFeature(Feature::Embedded))
+    return true;
 
   // Regardless of the access level, if the witness table is shared it means
   // we can safely not emit it. Every other module which needs it will generate
@@ -1391,7 +1420,10 @@ bool IRGenerator::canEmitWitnessTableLazily(SILWitnessTable *wt) {
 }
 
 void IRGenerator::addLazyWitnessTable(const ProtocolConformance *Conf) {
-  assert(!SIL.getASTContext().LangOpts.hasFeature(Feature::Embedded));
+  // In Embedded Swift, only class-bound wtables are allowed.
+  if (SIL.getASTContext().LangOpts.hasFeature(Feature::Embedded)) {
+    assert(Conf->getProtocol()->requiresClass());
+  }
 
   if (auto *wt = SIL.lookUpWitnessTable(Conf)) {
     // Add it to the queue if it hasn't already been put there.
@@ -1422,7 +1454,7 @@ void IRGenerator::addBackDeployedObjCActorInitialization(ClassDecl *ClassDecl) {
 
   // If we are not back-deploying concurrency, there's nothing to do.
   ASTContext &ctx = ClassDecl->getASTContext();
-  auto deploymentAvailability = AvailabilityContext::forDeploymentTarget(ctx);
+  auto deploymentAvailability = AvailabilityRange::forDeploymentTarget(ctx);
   if (deploymentAvailability.isContainedIn(ctx.getConcurrencyAvailability()))
     return;
 
@@ -1451,6 +1483,12 @@ void IRGenModule::setHasNoFramePointer(llvm::AttrBuilder &Attrs) {
 void IRGenModule::setHasNoFramePointer(llvm::Function *F) {
   llvm::AttrBuilder b(getLLVMContext());
   setHasNoFramePointer(b);
+  F->addFnAttrs(b);
+}
+
+void IRGenModule::setMustHaveFramePointer(llvm::Function *F) {
+  llvm::AttrBuilder b(getLLVMContext());
+  b.addAttribute("frame-pointer", "all");
   F->addFnAttrs(b);
 }
 
@@ -2094,19 +2132,18 @@ bool IRGenModule::useDllStorage() { return ::useDllStorage(Triple); }
 // runtime targets because the runtime library is always statically linked
 // to the program.
 
-#define FEATURE(N, V)                                                   \
-bool IRGenModule::is##N##FeatureAvailable(const ASTContext &context) {  \
-  if (Context.LangOpts.hasFeature(Feature::Embedded))                   \
-    return true;                                                        \
-  auto deploymentAvailability                                           \
-    = AvailabilityContext::forDeploymentTarget(context);                \
-  auto runtimeAvailability                                              \
-    = AvailabilityContext::forRuntimeTarget(context);                   \
-  return deploymentAvailability.isContainedIn(                          \
-    context.get##N##Availability())                                     \
-    && runtimeAvailability.isContainedIn(                               \
-      context.get##N##RuntimeAvailability());                           \
-}
+#define FEATURE(N, V)                                                          \
+  bool IRGenModule::is##N##FeatureAvailable(const ASTContext &context) {       \
+    if (Context.LangOpts.hasFeature(Feature::Embedded))                        \
+      return true;                                                             \
+    auto deploymentAvailability =                                              \
+        AvailabilityRange::forDeploymentTarget(context);                       \
+    auto runtimeAvailability = AvailabilityRange::forRuntimeTarget(context);   \
+    return deploymentAvailability.isContainedIn(                               \
+               context.get##N##Availability()) &&                              \
+           runtimeAvailability.isContainedIn(                                  \
+               context.get##N##RuntimeAvailability());                         \
+  }
 
 #include "swift/AST/FeatureAvailability.def"
 
@@ -2118,8 +2155,7 @@ bool IRGenModule::shouldPrespecializeGenericMetadata() {
     return IRGen.Opts.PrespecializeGenericMetadata;
   }
   auto &context = getSwiftModule()->getASTContext();
-  auto deploymentAvailability =
-      AvailabilityContext::forDeploymentTarget(context);
+  auto deploymentAvailability = AvailabilityRange::forDeploymentTarget(context);
   return IRGen.Opts.PrespecializeGenericMetadata &&
          deploymentAvailability.isContainedIn(
              context.getPrespecializedGenericMetadataAvailability()) &&
@@ -2291,8 +2327,7 @@ void IRGenModule::emitSwiftAsyncExtendedFrameInfoWeakRef() {
 
 bool IRGenModule::isConcurrencyAvailable() {
   auto &ctx = getSwiftModule()->getASTContext();
-  auto deploymentAvailability =
-    AvailabilityContext::forDeploymentTarget(ctx);
+  auto deploymentAvailability = AvailabilityRange::forDeploymentTarget(ctx);
   return deploymentAvailability.isContainedIn(ctx.getConcurrencyAvailability());
 }
 

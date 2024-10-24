@@ -37,6 +37,8 @@ class DeclContext;
 class Type;
 class ModuleDecl;
 enum class DeclAttrKind : unsigned;
+class DeclAttribute;
+class CustomAttr;
 class SynthesizedExtensionAnalyzer;
 struct PrintOptions;
 class SILPrintContext;
@@ -272,12 +274,12 @@ struct PrintOptions {
 
   bool SkipSwiftPrivateClangDecls = false;
 
-  /// Whether to skip internal stdlib declarations.
-  bool SkipPrivateStdlibDecls = false;
+  /// Whether to skip underscored declarations from system modules.
+  bool SkipPrivateSystemDecls = false;
 
-  /// Whether to skip underscored stdlib protocols.
+  /// Whether to skip underscored protocols from system modules.
   /// Protocols marked with @_show_in_interface are still printed.
-  bool SkipUnderscoredStdlibProtocols = false;
+  bool SkipUnderscoredSystemProtocols = false;
 
   /// Whether to skip unsafe C++ class methods that were renamed
   /// (e.g. __fooUnsafe). See IsSafeUseOfCxxDecl.
@@ -342,6 +344,10 @@ struct PrintOptions {
   /// Suppress emitting @available(*, noasync)
   bool SuppressNoAsyncAvailabilityAttr = false;
 
+  /// Suppress emitting isolated or async deinit, and emit open containing class
+  /// as public
+  bool SuppressIsolatedDeinit = false;
+
   /// Whether to print the \c{/*not inherited*/} comment on factory initializers.
   bool PrintFactoryInitializerComment = true;
 
@@ -387,11 +393,19 @@ struct PrintOptions {
   /// Replace BitwiseCopyable with _BitwiseCopyable.
   bool SuppressBitwiseCopyable = false;
 
+  /// Suppress ~Escapable types and lifetime dependence annotations
+  bool SuppressNonEscapableTypes = false;
+
+  /// Suppress modify/read accessors.
+  bool SuppressCoroutineAccessors = false;
+
   /// List of attribute kinds that should not be printed.
   std::vector<AnyAttrKind> ExcludeAttrList = {
       DeclAttrKind::Transparent, DeclAttrKind::Effects,
       DeclAttrKind::FixedLayout, DeclAttrKind::ShowInInterface,
   };
+
+  std::vector<CustomAttr *> ExcludeCustomAttrList = {};
 
   /// List of attribute kinds that should be printed exclusively.
   /// Empty means allow all.
@@ -438,9 +452,6 @@ struct PrintOptions {
 
   /// Print all decls that have at least this level of access.
   AccessLevel AccessFilter = AccessLevel::Private;
-
-  /// Print IfConfigDecls.
-  bool PrintIfConfig = true;
 
   /// Whether we are printing for sil.
   bool PrintForSIL = false;
@@ -520,6 +531,10 @@ struct PrintOptions {
   /// with types sharing a name with a module.
   bool AliasModuleNames = false;
 
+  /// Print some ABI details for public symbols as comments that can be
+  /// parsed by another tool.
+  bool PrintABIComments = false;
+
   /// Name of the modules that have been aliased in AliasModuleNames mode.
   /// Ideally we would use something other than a string to identify a module,
   /// but since one alias can apply to more than one module, strings happen
@@ -575,10 +590,6 @@ struct PrintOptions {
   /// compilers that might parse the result.
   bool PrintCompatibilityFeatureChecks = false;
 
-  /// Whether to print @_specialize attributes that have an availability
-  /// parameter.
-  bool PrintSpecializeAttributeWithAvailability = true;
-
   /// Whether to always desugar array types from `[base_type]` to `Array<base_type>`
   bool AlwaysDesugarArraySliceTypes = false;
 
@@ -627,6 +638,8 @@ struct PrintOptions {
     return false;
   }
 
+  bool excludeAttr(const DeclAttribute *DA) const;
+
   /// Retrieve the set of options for verbose printing to users.
   static PrintOptions printVerbose() {
     PrintOptions result;
@@ -661,7 +674,6 @@ struct PrintOptions {
     result.ExcludeAttrList.push_back(DeclAttrKind::Rethrows);
     result.PrintOverrideKeyword = false;
     result.AccessFilter = accessFilter;
-    result.PrintIfConfig = false;
     result.ShouldQualifyNestedDeclarations =
         QualifyNestedDeclarations::TypesOnly;
     result.PrintDocumentationComments = false;
@@ -679,10 +691,11 @@ struct PrintOptions {
     result.SkipUnavailable = true;
     result.SkipImplicit = true;
     result.SkipSwiftPrivateClangDecls = true;
-    result.SkipPrivateStdlibDecls = true;
-    result.SkipUnderscoredStdlibProtocols = true;
+    result.SkipPrivateSystemDecls = true;
+    result.SkipUnderscoredSystemProtocols = true;
     result.SkipUnsafeCXXMethods = true;
-    result.SkipDeinit = true;
+    result.SkipDeinit = false; // Deinit may have isolation attributes, which
+                               // are part of the interface
     result.EmptyLineBetweenDecls = true;
     result.CascadeDocComment = true;
     result.ShouldQualifyNestedDeclarations =
@@ -712,7 +725,8 @@ struct PrintOptions {
                                               bool useExportedModuleNames,
                                               bool aliasModuleNames,
                                               llvm::SmallSet<StringRef, 4>
-                                                *aliasModuleNamesTargets
+                                                *aliasModuleNamesTargets,
+                                              bool abiComments
                                               );
 
   /// Retrieve the set of options suitable for "Generated Interfaces", which
@@ -788,7 +802,7 @@ struct PrintOptions {
       PrintOptions::FunctionRepresentationMode::None;
     PO.PrintDocumentationComments = false;
     PO.ExcludeAttrList.push_back(DeclAttrKind::Available);
-    PO.SkipPrivateStdlibDecls = true;
+    PO.SkipPrivateSystemDecls = true;
     PO.SkipUnsafeCXXMethods = true;
     PO.ExplodeEnumCaseDecls = true;
     PO.ShouldQualifyNestedDeclarations = QualifyNestedDeclarations::TypesOnly;

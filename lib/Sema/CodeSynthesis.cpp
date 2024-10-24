@@ -548,7 +548,7 @@ createDesignatedInitOverrideGenericParams(ASTContext &ctx,
   for (auto *param : genericParams->getParams()) {
     auto *newParam = GenericTypeParamDecl::createImplicit(
         classDecl, param->getName(), depth, param->getIndex(),
-        param->isParameterPack(), param->isOpaqueType());
+        param->getParamKind());
     newParams.push_back(newParam);
   }
 
@@ -626,8 +626,7 @@ configureInheritedDesignatedInitAttributes(ClassDecl *classDecl,
     if (auto *parentDecl = classDecl->getInnermostDeclWithAvailability()) {
       asAvailableAs.push_back(parentDecl);
     }
-    AvailabilityInference::applyInferredAvailableAttrs(
-        ctor, asAvailableAs, ctx);
+    AvailabilityInference::applyInferredAvailableAttrs(ctor, asAvailableAs);
   }
 
   // Wire up the overrides.
@@ -768,7 +767,7 @@ createDesignatedInitOverride(ClassDecl *classDecl,
   auto genericSig = ctx.getOverrideGenericSignature(
       superclassDecl, classDecl, superclassCtorSig, genericParams);
 
-  assert(!subMap.hasArchetypes());
+  assert(!subMap.getRecursiveProperties().hasArchetype());
 
   if (superclassCtorSig) {
     auto *genericEnv = genericSig.getGenericEnvironment();
@@ -1692,11 +1691,6 @@ ConstructorDecl *
 SynthesizeDefaultInitRequest::evaluate(Evaluator &evaluator,
                                        NominalTypeDecl *decl) const {
   auto &ctx = decl->getASTContext();
-
-  FrontendStatsTracer StatsTracer(ctx.Stats,
-                                  "define-default-ctor", decl);
-  PrettyStackTraceDecl stackTrace("defining default constructor for",
-                                  decl);
 
   // Create the default constructor.
   auto ctorKind = decl->isDistributedActor() ?

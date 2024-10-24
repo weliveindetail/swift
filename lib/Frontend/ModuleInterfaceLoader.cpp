@@ -454,7 +454,7 @@ public:
      : ctx(ctx),
        fs(*ctx.SourceMgr.getFileSystem()),
        requiresOSSAModules(requiresOSSAModules) {}
-  
+
   // Check if all the provided file dependencies are up-to-date compared to
   // what's currently on disk.
   bool dependenciesAreUpToDate(StringRef modulePath,
@@ -524,7 +524,7 @@ public:
     moduleBuffer = std::move(*OutBuf);
     return serializedASTBufferIsUpToDate(modulePath, *moduleBuffer, rebuildInfo, AllDeps);
   }
-  
+
   enum class DependencyStatus {
     UpToDate,
     OutOfDate,
@@ -1513,7 +1513,8 @@ bool ModuleInterfaceLoader::buildSwiftModuleFromSwiftInterface(
 static bool readSwiftInterfaceVersionAndArgs(
     SourceManager &SM, DiagnosticEngine &Diags, llvm::StringSaver &ArgSaver,
     SwiftInterfaceInfo &interfaceInfo, StringRef interfacePath,
-    SourceLoc diagnosticLoc, llvm::Triple preferredTarget) {
+    SourceLoc diagnosticLoc, llvm::Triple preferredTarget,
+    std::optional<llvm::Triple> preferredTargetVariant) {
   llvm::vfs::FileSystem &fs = *SM.getFileSystem();
   auto FileOrError = swift::vfs::getFileOrSTDIN(fs, interfacePath);
   if (!FileOrError) {
@@ -1537,7 +1538,8 @@ static bool readSwiftInterfaceVersionAndArgs(
 
   if (extractCompilerFlagsFromInterface(interfacePath, SB, ArgSaver,
                                         interfaceInfo.Arguments,
-                                        preferredTarget)) {
+                                        preferredTarget,
+                                        preferredTargetVariant)) {
     InterfaceSubContextDelegateImpl::diagnose(
         interfacePath, diagnosticLoc, SM, &Diags,
         diag::error_extracting_version_from_module_interface);
@@ -1592,7 +1594,7 @@ bool ModuleInterfaceLoader::buildExplicitSwiftModuleFromSwiftInterface(
     StringRef outputPath, bool ShouldSerializeDeps,
     ArrayRef<std::string> CompiledCandidates,
     DependencyTracker *tracker) {
-  
+
   if (!Instance.getInvocation().getIRGenOptions().AlwaysCompile) {
     // First, check if the expected output already exists and possibly
     // up-to-date w.r.t. all of the dependencies it was built with. If so, early
@@ -1613,7 +1615,7 @@ bool ModuleInterfaceLoader::buildExplicitSwiftModuleFromSwiftInterface(
       return false;
     }
   }
-  
+
   // Read out the compiler version.
   llvm::BumpPtrAllocator alloc;
   llvm::StringSaver ArgSaver(alloc);
@@ -1621,7 +1623,8 @@ bool ModuleInterfaceLoader::buildExplicitSwiftModuleFromSwiftInterface(
   readSwiftInterfaceVersionAndArgs(
       Instance.getSourceMgr(), Instance.getDiags(), ArgSaver, InterfaceInfo,
       interfacePath, SourceLoc(),
-      Instance.getInvocation().getLangOptions().Target);
+      Instance.getInvocation().getLangOptions().Target,
+      Instance.getInvocation().getLangOptions().TargetVariant);
 
   auto Builder = ExplicitModuleInterfaceBuilder(
       Instance, &Instance.getDiags(), Instance.getSourceMgr(),
@@ -1668,6 +1671,28 @@ void InterfaceSubContextDelegateImpl::inheritOptionsForBuildingInterface(
     // So the Swift interface should know that as well to load these PCMs properly.
     GenericArgs.push_back("-clang-target");
     GenericArgs.push_back(triple);
+  }
+
+  if (LangOpts.TargetVariant.has_value()) {
+    genericSubInvocation.getLangOptions().TargetVariant = LangOpts.TargetVariant;
+    auto variantTriple = ArgSaver.save(genericSubInvocation.getLangOptions().TargetVariant->str());
+    if (!variantTriple.empty()) {
+      GenericArgs.push_back("-target-variant");
+      GenericArgs.push_back(variantTriple);
+    }
+  }
+
+  // Inherit the target SDK name and version
+  if (!LangOpts.SDKName.empty()) {
+    genericSubInvocation.getLangOptions().SDKName = LangOpts.SDKName;
+    GenericArgs.push_back("-target-sdk-name");
+    GenericArgs.push_back(ArgSaver.save(LangOpts.SDKName));
+  }
+  if (LangOpts.SDKVersion.has_value()) {
+    genericSubInvocation.getLangOptions().SDKVersion = LangOpts.SDKVersion;
+    GenericArgs.push_back("-target-sdk-version");
+    GenericArgs.push_back(ArgSaver.save(LangOpts.SDKVersion.value()
+                                                .getAsString()));
   }
 
   // Inherit the Swift language version
@@ -1787,6 +1812,9 @@ void InterfaceSubContextDelegateImpl::inheritOptionsForBuildingInterface(
   genericSubInvocation.getClangImporterOptions().ClangImporterDirectCC1Scan =
       clangImporterOpts.ClangImporterDirectCC1Scan;
 
+  genericSubInvocation.getSearchPathOptions().ScannerPrefixMapper =
+      SearchPathOpts.ScannerPrefixMapper;
+
   // Validate Clang modules once per-build session flags must be consistent
   // across all module sub-invocations
   if (clangImporterOpts.ValidateModulesOnce) {
@@ -1819,7 +1847,8 @@ bool InterfaceSubContextDelegateImpl::extractSwiftInterfaceVersionAndArgs(
     StringRef interfacePath, SourceLoc diagnosticLoc) {
   if (readSwiftInterfaceVersionAndArgs(SM, *Diags, ArgSaver, interfaceInfo,
                                        interfacePath, diagnosticLoc,
-                                       subInvocation.getLangOptions().Target))
+                                       subInvocation.getLangOptions().Target,
+                                       subInvocation.getLangOptions().TargetVariant))
     return true;
 
   // Prior to Swift 5.9, swiftinterfaces were always built (accidentally) with
@@ -1950,9 +1979,13 @@ InterfaceSubContextDelegateImpl::InterfaceSubContextDelegateImpl(
     genericSubInvocation.getFrontendOptions()
         .DependencyScanningSubInvocation = true;
   } else if (LoaderOpts.strictImplicitModuleContext ||
-             // Explicit module Interface verification jobs still spawn a sub-instance
-             // and we must ensure this sub-instance gets all of the Xcc flags.
-             LoaderOpts.disableImplicitSwiftModule) {
+             // Explicit module Interface verification jobs still spawn a
+             // sub-instance and we must ensure this sub-instance gets all of
+             // the Xcc flags.
+             LoaderOpts.disableImplicitSwiftModule ||
+             // If using direct cc1 argument mode for lldb or typecheck
+             // interface, inherit all clang arguments.
+             clangImporterOpts.DirectClangCC1ModuleBuild) {
     // If the compiler has been asked to be strict with ensuring downstream
     // dependencies get the parent invocation's context, inherit the extra Clang
     // arguments also. Inherit any clang-specific state of the compilation
@@ -2068,8 +2101,24 @@ StringRef InterfaceSubContextDelegateImpl::computeCachedOutputPath(
 std::string
 InterfaceSubContextDelegateImpl::getCacheHash(StringRef useInterfacePath,
                                               StringRef sdkPath) {
-  auto normalizedTargetTriple =
-      getTargetSpecificModuleTriple(genericSubInvocation.getLangOptions().Target);
+  // When doing dependency scanning for explicit module, use strict context hash
+  // to ensure sound module hash.
+  bool useStrictCacheHash =
+      genericSubInvocation.getFrontendOptions().RequestedAction ==
+      FrontendOptions::ActionType::ScanDependencies;
+
+  // Include the normalized target triple when not using strict hash.
+  // Otherwise, use the full target to ensure soundness of the hash. In
+  // practice, .swiftinterface files will be in target-specific subdirectories
+  // and would have target-specific pieces #if'd out. However, it doesn't hurt
+  // to include it, and it guards against mistakenly reusing cached modules
+  // across targets. Note that this normalization explicitly doesn't include the
+  // minimum deployment target (e.g. the '12.0' in 'ios12.0').
+  auto targetToHash = useStrictCacheHash
+                          ? genericSubInvocation.getLangOptions().Target
+                          : getTargetSpecificModuleTriple(
+                                genericSubInvocation.getLangOptions().Target);
+
   std::string sdkBuildVersion = getSDKBuildVersion(sdkPath);
   const auto ExtraArgs = genericSubInvocation.getClangImporterOptions()
                              .getReducedExtraArgsForSwiftModuleDependency();
@@ -2086,13 +2135,8 @@ InterfaceSubContextDelegateImpl::getCacheHash(StringRef useInterfacePath,
       // anyways.
       useInterfacePath,
 
-      // Include the normalized target triple. In practice, .swiftinterface
-      // files will be in target-specific subdirectories and would have
-      // target-specific pieces #if'd out. However, it doesn't hurt to include
-      // it, and it guards against mistakenly reusing cached modules across
-      // targets. Note that this normalization explicitly doesn't include the
-      // minimum deployment target (e.g. the '12.0' in 'ios12.0').
-      normalizedTargetTriple.str(),
+      // The target triple to hash.
+      targetToHash.str(),
 
       // The SDK path is going to affect how this module is imported, so
       // include it.
@@ -2117,6 +2161,10 @@ InterfaceSubContextDelegateImpl::getCacheHash(StringRef useInterfacePath,
       // Clang ExtraArgs that affects how clang types are imported into swift
       // module.
       llvm::hash_combine_range(ExtraArgs.begin(), ExtraArgs.end()),
+
+      /// Application extension.
+      unsigned(
+          genericSubInvocation.getLangOptions().EnableAppExtensionRestrictions),
 
       // Whether or not OSSA modules are enabled.
       //

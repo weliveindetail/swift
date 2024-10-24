@@ -231,7 +231,8 @@ static FuncDecl* createLocalFunc_doInvokeOnReturn(
   // We create the generic param at invalid depth, which means it'll be filled
   // by semantic analysis.
   auto *resultGenericParamDecl = GenericTypeParamDecl::createImplicit(
-      parentFunc, C.getIdentifier("R"), /*depth*/ 0, /*index*/ 0);
+      parentFunc, C.getIdentifier("R"), /*depth*/ 0, /*index*/ 0,
+      GenericTypeParamKind::Type);
   GenericParamList *doInvokeGenericParamList =
       GenericParamList::create(C, sloc, {resultGenericParamDecl}, sloc);
 
@@ -808,8 +809,7 @@ static ValueDecl *deriveDistributedActor_unownedExecutor(DerivedConformance &der
   if (auto enclosingDecl = property->getInnermostDeclWithAvailability())
     asAvailableAs.push_back(enclosingDecl);
 
-  AvailabilityInference::applyInferredAvailableAttrs(
-      property, asAvailableAs, ctx);
+  AvailabilityInference::applyInferredAvailableAttrs(property, asAvailableAs);
 
   auto getter = derived.addGetterToReadOnlyDerivedProperty(property);
   getter->setBodySynthesizer(deriveBodyDistributedActor_unownedExecutor);

@@ -2130,8 +2130,8 @@ buildBuiltinLiteralArgs(SILGenFunction &SGF, SGFContext C,
                         RegexLiteralExpr *expr) {
   auto &ctx = SGF.getASTContext();
   // %0 = string_literal <regex text>
-  auto strLiteralArgs = emitStringLiteralArgs(SGF, expr, expr->getRegexText(), C,
-                                          StringLiteralExpr::Encoding::UTF8);
+  auto strLiteralArgs = emitStringLiteralArgs(
+      SGF, expr, expr->getRegexToEmit(), C, StringLiteralExpr::Encoding::UTF8);
   // %1 = function_ref String.init(
   //   _builtinStringLiteral:utf8CodeUnitCount:isASCII:)
   // %2 = apply %1(%0, ..., ...) -> $String
@@ -3317,9 +3317,9 @@ Expr *SILGenFunction::findStorageReferenceExprForMoveOnly(Expr *argExpr,
 
   if (!storage)
     return nullptr;
-  if (!storage->hasStorage()
-      && storage->getReadImpl() != ReadImplKind::Read
-      && storage->getReadImpl() != ReadImplKind::Address) {
+  if (!storage->hasStorage() && storage->getReadImpl() != ReadImplKind::Read &&
+      storage->getReadImpl() != ReadImplKind::Read2 &&
+      storage->getReadImpl() != ReadImplKind::Address) {
     return nullptr;
   }
 
@@ -4989,7 +4989,14 @@ public:
       SGF.B.createEndBorrow(l, *i);
       SGF.B.createDestroyValue(l, (*i)->getOperand());
     }
-    if (forUnwind) {
+    auto *beginApply =
+        cast<BeginApplyInst>(ApplyToken->getDefiningInstruction());
+    auto isCalleeAllocated = beginApply->isCalleeAllocated();
+    auto unwindOnCallerError =
+        !isCalleeAllocated ||
+        SGF.SGM.getASTContext().LangOpts.hasFeature(
+            Feature::CoroutineAccessorsUnwindOnCallerError);
+    if (forUnwind && unwindOnCallerError) {
       SGF.B.createAbortApply(l, ApplyToken);
     } else {
       SGF.B.createEndApply(l, ApplyToken,
@@ -5049,6 +5056,10 @@ SILGenFunction::emitBeginApply(SILLocation loc, ManagedValue fn,
                /*indirect results*/ {}, /*indirect errors*/ {},
                rawResults, ExecutorBreadcrumb());
 
+  if (substFnType->isCalleeAllocatedCoroutine()) {
+    auto allocation = rawResults.pop_back_val();
+    enterDeallocStackCleanup(allocation);
+  }
   auto token = rawResults.pop_back_val();
   auto yieldValues = llvm::ArrayRef(rawResults);
 
@@ -5709,8 +5720,10 @@ RValue SILGenFunction::emitApply(
     }
 
     breadcrumb = emitHopToTargetExecutor(loc, executor);
-  } else if (ExpectedExecutor &&
-             (substFnType->isAsync() || calleeTypeInfo.foreign.async)) {
+  } else if ((substFnType->isAsync() || calleeTypeInfo.foreign.async) &&
+             ExpectedExecutor.isNecessary()) {
+    assert(F.isAsync());
+
     // Otherwise, if we're in an actor method ourselves, and we're calling into
     // any sort of async function, we'll want to make sure to hop back to our
     // own executor afterward, since the callee could have made arbitrary hops

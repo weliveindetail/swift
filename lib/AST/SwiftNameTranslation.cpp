@@ -26,6 +26,7 @@
 
 #include "clang/AST/DeclObjC.h"
 #include "llvm/ADT/SmallString.h"
+#include <optional>
 
 using namespace swift;
 
@@ -232,8 +233,11 @@ swift::cxx_translation::getDeclRepresentation(const ValueDecl *VD) {
       genericSignature = AFD->getGenericSignature();
   }
   if (const auto *typeDecl = dyn_cast<NominalTypeDecl>(VD)) {
-    if (isa<ProtocolDecl>(typeDecl))
+    if (isa<ProtocolDecl>(typeDecl)) {
+      if (typeDecl->hasClangNode())
+        return {ObjCxxOnly, std::nullopt};
       return {Unsupported, UnrepresentableProtocol};
+    }
     // Swift's consume semantics are not yet supported in C++.
     if (!typeDecl->canBeCopyable())
       return {Unsupported, UnrepresentableMoveOnly};
@@ -244,8 +248,8 @@ swift::cxx_translation::getDeclRepresentation(const ValueDecl *VD) {
         return {Unsupported, UnrepresentableGeneric};
       genericSignature = typeDecl->getGenericSignature();
     }
-    // Nested types are not yet supported.
-    if (!typeDecl->hasClangNode() &&
+    // Nested classes are not yet supported.
+    if (isa<ClassDecl>(VD) && !typeDecl->hasClangNode() &&
         isa_and_nonnull<NominalTypeDecl>(
             typeDecl->getDeclContext()->getAsDecl()))
       return {Unsupported, UnrepresentableNested};
@@ -264,6 +268,8 @@ swift::cxx_translation::getDeclRepresentation(const ValueDecl *VD) {
       for (const auto *elementDecl : enumCase->getElements()) {
         if (!elementDecl->hasAssociatedValues())
           continue;
+        if (elementDecl->isIndirect())
+          return {Unsupported, UnrepresentableIndirectEnum};
         // Do not expose any enums with > 1
         // enum parameter, or any enum parameter
         // whose type we do not yet support.
@@ -334,7 +340,7 @@ bool swift::cxx_translation::isExposableToCxx(GenericSignature genericSig) {
         return false;
 
       auto proto = req.getProtocolDecl();
-      if (!proto->isMarkerProtocol())
+      if (!proto->isMarkerProtocol() && !proto->hasClangNode())
         return false;
     }
   }

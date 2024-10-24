@@ -1268,6 +1268,24 @@ getActualLayoutConstraintKind(uint64_t rawKind) {
   return std::nullopt;
 }
 
+/// Translate from the param kind to the Serialization enum values, which are
+/// guaranteed to be stable.
+static std::optional<GenericTypeParamKind>
+getActualParamKind(uint64_t rawKind) {
+#define CASE(KIND)                   \
+  case serialization::GenericParamKind::KIND: \
+    return GenericTypeParamKind::KIND;
+
+  switch ((serialization::GenericParamKind)rawKind) {
+  CASE(Type)
+  CASE(Pack)
+  CASE(Value)
+  }
+#undef CASE
+
+  return std::nullopt;
+}
+
 void ModuleFile::deserializeGenericRequirements(
                    ArrayRef<uint64_t> scratch,
                    unsigned &nextIndex,
@@ -1577,12 +1595,11 @@ ModuleFile::getGenericSignatureChecked(serialization::GenericSignatureID ID) {
       auto paramTy = getType(rawParamIDs[i+1])->castTo<GenericTypeParamType>();
 
       if (!name.empty()) {
-        auto *paramDecl = GenericTypeParamDecl::createDeserialized(
-            getAssociatedModule(), name, paramTy->getDepth(),
-            paramTy->getIndex(), paramTy->isParameterPack(),
-            /*isOpaqueType*/ false);
-        paramTy = paramDecl->getDeclaredInterfaceType()
-                   ->castTo<GenericTypeParamType>();
+        paramTy = GenericTypeParamType::get(name, paramTy->getParamKind(),
+                                            paramTy->getDepth(),
+                                            paramTy->getIndex(),
+                                            paramTy->getValueType(),
+                                            getContext());
       }
 
       paramTypes.push_back(paramTy);
@@ -1638,19 +1655,19 @@ Expected<GenericEnvironment *> ModuleFile::getGenericEnvironmentChecked(
     fatal(llvm::make_error<InvalidRecordKindError>(recordID));
 
   unsigned kind;
-  GenericSignatureID parentSigID;
+  GenericSignatureID genericSigID;
   TypeID existentialOrShapeID;
   SubstitutionMapID subsID;
   GenericEnvironmentLayout::readRecord(scratch, kind, existentialOrShapeID,
-                                       parentSigID, subsID);
+                                       genericSigID, subsID);
 
   auto existentialOrShapeTypeOrError = getTypeChecked(existentialOrShapeID);
   if (!existentialOrShapeTypeOrError)
     return existentialOrShapeTypeOrError.takeError();
 
-  auto parentSigOrError = getGenericSignatureChecked(parentSigID);
-  if (!parentSigOrError)
-    return parentSigOrError.takeError();
+  auto genericSigOrError = getGenericSignatureChecked(genericSigID);
+  if (!genericSigOrError)
+    return genericSigOrError.takeError();
 
   auto contextSubsOrError = getSubstitutionMapChecked(subsID);
   if (!contextSubsOrError)
@@ -1660,12 +1677,15 @@ Expected<GenericEnvironment *> ModuleFile::getGenericEnvironmentChecked(
   switch (GenericEnvironmentKind(kind)) {
   case GenericEnvironmentKind::OpenedExistential:
     genericEnv = GenericEnvironment::forOpenedExistential(
-        existentialOrShapeTypeOrError.get(), parentSigOrError.get(), UUID::fromTime());
+        genericSigOrError.get(),
+        existentialOrShapeTypeOrError.get(),
+        contextSubsOrError.get(),
+        UUID::fromTime());
     break;
 
   case GenericEnvironmentKind::OpenedElement:
     genericEnv = GenericEnvironment::forOpenedElement(
-        parentSigOrError.get(), UUID::fromTime(),
+        genericSigOrError.get(), UUID::fromTime(),
         cast<GenericTypeParamType>(
           existentialOrShapeTypeOrError.get()->getCanonicalType()),
         contextSubsOrError.get());
@@ -3054,6 +3074,7 @@ getActualReadImplKind(unsigned rawKind) {
   CASE(Inherited)
   CASE(Address)
   CASE(Read)
+  CASE(Read2)
 #undef CASE
   }
   return std::nullopt;
@@ -3072,6 +3093,7 @@ getActualWriteImplKind(unsigned rawKind) {
   CASE(InheritedWithObservers)
   CASE(MutableAddress)
   CASE(Modify)
+  CASE(Modify2)
 #undef CASE
   }
   return std::nullopt;
@@ -3088,6 +3110,7 @@ getActualReadWriteImplKind(unsigned rawKind) {
   CASE(MutableAddress)
   CASE(MaterializeToTemporary)
   CASE(Modify)
+  CASE(Modify2)
   CASE(StoredWithDidSet)
   CASE(InheritedWithDidSet)
 #undef CASE
@@ -3446,25 +3469,37 @@ public:
                                   StringRef blobData) {
     IdentifierID nameID;
     bool isImplicit;
-    bool isParameterPack;
-    unsigned depth;
-    unsigned index;
     bool isOpaqueType;
+    TypeID interfaceTypeID;
 
     decls_block::GenericTypeParamDeclLayout::readRecord(
-        scratch, nameID, isImplicit, isParameterPack, depth, index,
-        isOpaqueType);
+        scratch, nameID, isImplicit, isOpaqueType, interfaceTypeID);
+
+    auto interfaceTy = MF.getTypeChecked(interfaceTypeID);
+    if (!interfaceTy)
+      return interfaceTy.takeError();
+
+    auto paramTy = interfaceTy.get()->castTo<GenericTypeParamType>();
 
     // Always create GenericTypeParamDecls in the associated file; the real
     // context will reparent them.
     auto *DC = MF.getFile();
     auto *genericParam = GenericTypeParamDecl::createDeserialized(
-        DC, MF.getIdentifier(nameID), depth, index, isParameterPack,
-        isOpaqueType);
+        DC, MF.getIdentifier(nameID), paramTy->getDepth(), paramTy->getIndex(),
+        paramTy->getParamKind(), isOpaqueType);
     declOrOffset = genericParam;
 
     if (isImplicit)
       genericParam->setImplicit();
+
+    // If we're dealing with a value generic, the parameter type already
+    // serializes the value type. Inform the request evaluator that we don't
+    // need to recompute this value for the param decl.
+    if (paramTy->isValue()) {
+      ctx.evaluator.cacheOutput(
+        GenericTypeParamDeclGetValueTypeRequest{genericParam},
+        paramTy->getValueType());
+    }
 
     return genericParam;
   }
@@ -3714,10 +3749,9 @@ public:
       lifetimeDependencies.push_back(*info);
     }
 
-    if (!lifetimeDependencies.empty()) {
-      ctx.evaluator.cacheOutput(LifetimeDependenceInfoRequest{ctor},
-                                ctx.AllocateCopy(lifetimeDependencies));
-    }
+    ctx.evaluator.cacheOutput(LifetimeDependenceInfoRequest{ctor},
+                              lifetimeDependencies.empty()? std::nullopt :
+                                  ctx.AllocateCopy(lifetimeDependencies));
 
     if (auto errorConvention = MF.maybeReadForeignErrorConvention())
       ctor->setForeignErrorConvention(*errorConvention);
@@ -4303,10 +4337,9 @@ public:
       lifetimeDependencies.push_back(*info);
     }
 
-    if (!lifetimeDependencies.empty()) {
-      ctx.evaluator.cacheOutput(LifetimeDependenceInfoRequest{fn},
-                                ctx.AllocateCopy(lifetimeDependencies));
-    }
+    ctx.evaluator.cacheOutput(LifetimeDependenceInfoRequest{fn},
+                              lifetimeDependencies.empty() ? std::nullopt
+                                  : ctx.AllocateCopy(lifetimeDependencies));
 
     if (auto errorConvention = MF.maybeReadForeignErrorConvention())
       fn->setForeignErrorConvention(*errorConvention);
@@ -6347,11 +6380,13 @@ llvm::Error DeclDeserializer::deserializeDeclCommon() {
       case decls_block::RawLayout_DECL_ATTR: {
         bool isImplicit;
         TypeID typeID;
+        TypeID countID;
         uint32_t rawSize;
         uint8_t rawAlign;
         bool movesAsLike;
         serialization::decls_block::RawLayoutDeclAttrLayout::
-          readRecord(scratch, isImplicit, typeID, rawSize, rawAlign, movesAsLike);
+          readRecord(scratch, isImplicit, typeID, countID, rawSize, rawAlign,
+                     movesAsLike);
         
         if (typeID) {
           auto type = MF.getTypeChecked(typeID);
@@ -6359,14 +6394,20 @@ llvm::Error DeclDeserializer::deserializeDeclCommon() {
             return type.takeError();
           }
           auto typeRepr = new (ctx) FixedTypeRepr(type.get(), SourceLoc());
-          if (rawAlign == 0) {
+          if (!countID) {
             Attr = new (ctx) RawLayoutAttr(typeRepr,
                                            movesAsLike,
                                            SourceLoc(),
                                            SourceRange());
             break;
           } else {
-            Attr = new (ctx) RawLayoutAttr(typeRepr, rawSize, movesAsLike,
+            auto count = MF.getTypeChecked(countID);
+            if (!count) {
+              return count.takeError();
+            }
+            auto countRepr = new (ctx) FixedTypeRepr(count.get(), SourceLoc());
+
+            Attr = new (ctx) RawLayoutAttr(typeRepr, countRepr, movesAsLike,
                                            SourceLoc(),
                                            SourceRange());
             break;
@@ -6604,6 +6645,7 @@ getActualSILCoroutineKind(uint8_t rep) {
     return swift::SILCoroutineKind::KIND;
   CASE(None)
   CASE(YieldOnce)
+  CASE(YieldOnce2)
   CASE(YieldMany)
 #undef CASE
   default:
@@ -6782,6 +6824,32 @@ DESERIALIZE_TYPE(BUILTIN_ALIAS_TYPE)(
 
   return alias->getDeclaredInterfaceType();
 }
+
+Expected<Type>
+DESERIALIZE_TYPE(BUILTIN_FIXED_ARRAY_TYPE)(
+    ModuleFile &MF, SmallVectorImpl<uint64_t> &scratch, StringRef blobData)
+{
+  TypeID sizeID;
+  TypeID elementTypeID;
+  decls_block::BuiltinFixedArrayTypeLayout::readRecord(scratch, sizeID,
+                                                       elementTypeID);
+                                                       
+  
+  auto sizeOrError = MF.getTypeChecked(sizeID);
+  if (!sizeOrError) {
+    return sizeOrError.takeError();
+  }
+  auto size = sizeOrError.get()->getCanonicalType();
+  
+  auto elementTypeOrError = MF.getTypeChecked(elementTypeID);
+  if (!elementTypeOrError) {
+    return elementTypeOrError.takeError();
+  }
+  auto elementType = elementTypeOrError.get()->getCanonicalType();
+  
+  return BuiltinFixedArrayType::get(size, elementType);
+}
+
 
 Expected<Type> DESERIALIZE_TYPE(NAME_ALIAS_TYPE)(
     ModuleFile &MF, SmallVectorImpl<uint64_t> &scratch, StringRef blobData) {
@@ -7297,15 +7365,23 @@ Expected<Type> DESERIALIZE_TYPE(ELEMENT_ARCHETYPE_TYPE)(
 Expected<Type>
 DESERIALIZE_TYPE(GENERIC_TYPE_PARAM_TYPE)(
     ModuleFile &MF, SmallVectorImpl<uint64_t> &scratch, StringRef blobData) {
-  bool parameterPack;
-  DeclID declIDOrDepth;
-  unsigned indexPlusOne;
+  unsigned rawParamKind;
+  bool hasDecl;
+  unsigned depth;
+  unsigned index;
+  DeclID declOrIdentifier;
+  TypeID valueTypeID;
 
   decls_block::GenericTypeParamTypeLayout::readRecord(
-      scratch, parameterPack, declIDOrDepth, indexPlusOne);
+      scratch, rawParamKind, hasDecl, depth, index, declOrIdentifier,
+      valueTypeID);
 
-  if (indexPlusOne == 0) {
-    auto genericParamOrError = MF.getDeclChecked(declIDOrDepth);
+  auto paramKind = getActualParamKind(rawParamKind);
+  if (!paramKind)
+    return MF.diagnoseFatal();
+
+  if (hasDecl) {
+    auto genericParamOrError = MF.getDeclChecked(declOrIdentifier);
     if (!genericParamOrError)
       return genericParamOrError.takeError();
 
@@ -7314,11 +7390,25 @@ DESERIALIZE_TYPE(GENERIC_TYPE_PARAM_TYPE)(
     if (!genericParam)
       return MF.diagnoseFatal();
 
+    ASSERT(*paramKind == genericParam->getParamKind());
+    ASSERT(depth == genericParam->getDepth());
+    ASSERT(index == genericParam->getIndex());
+
     return genericParam->getDeclaredInterfaceType();
   }
 
-  return GenericTypeParamType::get(parameterPack, declIDOrDepth,
-                                   indexPlusOne - 1, MF.getContext());
+  auto valueType = MF.getTypeChecked(valueTypeID);
+  if (!valueType)
+    return valueType.takeError();
+
+  if (declOrIdentifier == 0) {
+    return GenericTypeParamType::get(*paramKind, depth, index, *valueType,
+                                     MF.getContext());
+  }
+
+  auto name = MF.getDeclBaseName(declOrIdentifier).getIdentifier();
+  return GenericTypeParamType::get(name, *paramKind, depth, index, *valueType,
+                                   MF.getContext());
 }
 
 Expected<Type> DESERIALIZE_TYPE(PROTOCOL_COMPOSITION_TYPE)(
@@ -7884,6 +7974,17 @@ Expected<Type> DESERIALIZE_TYPE(ERROR_TYPE)(ModuleFile &MF,
     return ErrorType::get(ctx);
   return ErrorType::get(origTy);
 }
+
+Expected<Type> DESERIALIZE_TYPE(INTEGER_TYPE)(ModuleFile &MF,
+                                              SmallVectorImpl<uint64_t> &scratch,
+                                              StringRef blobData) {
+  auto &ctx = MF.getContext();
+  bool isNegative;
+  
+  decls_block::IntegerTypeLayout::readRecord(scratch, isNegative);
+
+  return IntegerType::get(blobData, isNegative, ctx);
+}
 } // namespace decls_block
 } // namespace serialization
 }
@@ -8063,9 +8164,6 @@ public:
 
 llvm::Expected<const clang::Type *>
 ModuleFile::getClangType(ClangTypeID TID) {
-  if (!getContext().LangOpts.UseClangFunctionTypes)
-    return nullptr;
-
   if (TID == 0)
     return nullptr;
 

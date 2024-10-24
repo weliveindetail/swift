@@ -846,7 +846,7 @@ namespace {
                 // .e(a: X, b: X)   -> (a: X, b: X)
                 // .f((a: X, b: X)) -> ((a: X, b: X)
                 SmallVector<Space, 4> constElemSpaces;
-                if (auto payloadTy = eed->getArgumentInterfaceType()) {
+                if (auto payloadTy = eed->getPayloadInterfaceType()) {
                   auto eedTy = tp->getCanonicalType()->getTypeOfMember(
                       eed, payloadTy);
                   if (auto *TTy = eedTy->getAs<TupleType>()) {
@@ -1188,7 +1188,7 @@ namespace {
       case RequiresDefault::UncoveredSwitch: {
         OS << tok::kw_default << ":\n" << placeholder << "\n";
         DE.diagnose(startLoc, mainDiagType.value())
-          .warnUntilSwiftVersionIf(downgrade, 6);
+          .limitBehaviorIf(downgrade, DiagnosticBehavior::Warning);
         DE.diagnose(startLoc, diag::missing_several_cases, /*default*/true)
           .fixItInsert(insertLoc, buffer.str());
       }
@@ -1208,7 +1208,7 @@ namespace {
       // Check if we still have to emit the main diagnostic.
       if (mainDiagType.has_value()) {
         DE.diagnose(startLoc, mainDiagType.value())
-          .warnUntilSwiftVersionIf(downgrade, 6);
+          .limitBehaviorIf(downgrade, DiagnosticBehavior::Warning);
       }
 
       // Add notes to explain what's missing.

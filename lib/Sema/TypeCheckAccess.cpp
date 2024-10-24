@@ -15,19 +15,20 @@
 //===----------------------------------------------------------------------===//
 
 #include "TypeCheckAccess.h"
-#include "TypeChecker.h"
-#include "TypeCheckAvailability.h"
 #include "TypeAccessScopeChecker.h"
+#include "TypeCheckAvailability.h"
+#include "TypeChecker.h"
 #include "swift/AST/ASTVisitor.h"
 #include "swift/AST/ASTWalker.h"
 #include "swift/AST/ClangModuleLoader.h"
 #include "swift/AST/DiagnosticsSema.h"
 #include "swift/AST/ExistentialLayout.h"
 #include "swift/AST/Import.h"
-#include "swift/AST/Pattern.h"
 #include "swift/AST/ParameterList.h"
+#include "swift/AST/Pattern.h"
 #include "swift/AST/TypeCheckRequests.h"
 #include "swift/Basic/Assertions.h"
+#include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclObjC.h"
 
 using namespace swift;
@@ -598,7 +599,6 @@ public:
   UNREACHABLE(PrecedenceGroup, "cannot appear in a type context")
   UNREACHABLE(Module, "cannot appear in a type context")
 
-  UNREACHABLE(IfConfig, "does not have access control")
   UNREACHABLE(PoundDiagnostic, "does not have access control")
   UNREACHABLE(Param, "does not have access control")
   UNREACHABLE(GenericTypeParam, "does not have access control")
@@ -1374,7 +1374,6 @@ public:
 #define UNINTERESTING(KIND) \
   void visit##KIND##Decl(KIND##Decl *D) {}
 
-  UNINTERESTING(IfConfig) // Does not have access control.
   UNINTERESTING(PoundDiagnostic) // Does not have access control.
   UNINTERESTING(EnumCase) // Handled at the EnumElement level.
   UNINTERESTING(Var) // Handled at the PatternBinding level.
@@ -1885,6 +1884,11 @@ bool isFragileClangNode(const ClangNode &node) {
     return isFragileClangType(pd->getType());
   if (auto *typedefDecl = dyn_cast<clang::TypedefNameDecl>(decl))
     return isFragileClangType(typedefDecl->getUnderlyingType());
+  if (auto *rd = dyn_cast<clang::RecordDecl>(decl)) {
+    if (!isa<clang::CXXRecordDecl>(rd))
+      return false;
+    return !rd->getDeclContext()->isExternCContext();
+  }
   return true;
 }
 
@@ -1999,7 +2003,9 @@ swift::getDisallowedOriginKind(const Decl *decl,
       where.getDeclContext()->getAsDecl() &&
       where.getDeclContext()->getAsDecl()->getModuleContext()->isResilient() &&
       decl->hasClangNode() && !decl->getModuleContext()->isSwiftShimsModule() &&
-      isFragileClangNode(decl->getClangNode()))
+      isFragileClangNode(decl->getClangNode()) &&
+      !SF->getASTContext().LangOpts.hasFeature(
+          Feature::AssumeResilientCxxTypes))
     return DisallowedOriginKind::FragileCxxAPI;
 
   // Report non-public import last as it can be ignored by the caller.
@@ -2132,7 +2138,6 @@ public:
 
   UNINTERESTING(PrefixOperator) // Does not reference other decls.
   UNINTERESTING(PostfixOperator) // Does not reference other decls.
-  UNINTERESTING(IfConfig) // Not applicable.
   UNINTERESTING(PoundDiagnostic) // Not applicable.
   UNINTERESTING(EnumCase) // Handled at the EnumElement level.
   UNINTERESTING(Destructor) // Always correct.
@@ -2552,7 +2557,7 @@ void swift::diagnoseUnnecessaryPublicImports(SourceFile &SF) {
                                           diag::remove_package_import;
     auto inFlight = ctx.Diags.diagnose(import.importLoc,
                                        diagId,
-                                       importedModule);
+                                       importedModule->getName());
 
     if (levelUsed == AccessLevel::Package) {
       inFlight.fixItReplace(import.accessLevelRange, "package");

@@ -110,6 +110,25 @@ public:
     return true;
   }
 
+  void diagnoseIsolatedDeinitInValueTypes(DeclAttribute *attr) {
+    auto &C = D->getASTContext();
+
+    if (isa<DestructorDecl>(D)) {
+      if (!C.LangOpts.hasFeature(Feature::IsolatedDeinit)) {
+        diagnoseAndRemoveAttr(attr, diag::isolated_deinit_experimental);
+        return;
+      }
+
+      if (auto nominal = dyn_cast<NominalTypeDecl>(D->getDeclContext())) {
+        if (!isa<ClassDecl>(nominal)) {
+          // only classes and actors can have isolated deinit.
+          diagnoseAndRemoveAttr(attr, diag::isolated_deinit_on_value_type);
+          return;
+        }
+      }
+    }
+  }
+
   template <typename... ArgTypes>
   InFlightDiagnostic diagnose(ArgTypes &&... Args) const {
     return Ctx.Diags.diagnose(std::forward<ArgTypes>(Args)...);
@@ -329,6 +348,7 @@ public:
 
   void visitReasyncAttr(ReasyncAttr *attr);
   void visitNonisolatedAttr(NonisolatedAttr *attr);
+  void visitIsolatedAttr(IsolatedAttr *attr);
 
   void visitNoImplicitCopyAttr(NoImplicitCopyAttr *attr);
   
@@ -364,8 +384,9 @@ public:
 
   void visitStaticExclusiveOnlyAttr(StaticExclusiveOnlyAttr *attr);
   void visitWeakLinkedAttr(WeakLinkedAttr *attr);
-  
   void visitSILGenNameAttr(SILGenNameAttr *attr);
+  void visitUnsafeAttr(UnsafeAttr *attr);
+  void visitLifetimeAttr(LifetimeAttr *attr);
 };
 
 } // end anonymous namespace
@@ -1612,7 +1633,8 @@ visitObjCImplementationAttr(ObjCImplementationAttr *attr) {
       auto argListRange = getArgListRange(Ctx, attr);
       if (argListRange.isValid()) {
         diag.fixItRemove(argListRange);
-        fixDeclarationObjCName(diag, ED, objcLangAttr->getName(),
+        fixDeclarationObjCName(diag, ED,
+                               objcLangAttr->getName().value_or(ObjCSelector()),
                                correctSelector);
       }
       objcLangAttr->setName(correctSelector, /*implicit=*/false);
@@ -1678,12 +1700,13 @@ visitObjCImplementationAttr(ObjCImplementationAttr *attr) {
     // While it's possible that @objc @implementation would function with
     // pre-stable runtimes, this isn't a configuration that's been tested or
     // supported.
-    auto deploymentAvailability = AvailabilityContext::forDeploymentTarget(Ctx);
+    auto deploymentAvailability = AvailabilityRange::forDeploymentTarget(Ctx);
     if (!deploymentAvailability.isContainedIn(Ctx.getSwift50Availability())) {
-      auto diag = diagnose(attr->getLocation(),
-               diag::attr_objc_implementation_raise_minimum_deployment_target,
-               prettyPlatformString(targetPlatform(Ctx.LangOpts)),
-               Ctx.getSwift50Availability().getOSVersion().getLowerEndpoint());
+      auto diag = diagnose(
+          attr->getLocation(),
+          diag::attr_objc_implementation_raise_minimum_deployment_target,
+          Ctx.getTargetPlatformStringForDiagnostics(),
+          Ctx.getSwift50Availability().getRawMinimumVersion());
       if (attr->isEarlyAdopter()) {
         diag.wrapIn(diag::wrap_objc_implementation_will_become_error);
       }
@@ -2175,8 +2198,8 @@ void AttributeChecker::visitAvailableAttr(AvailableAttr *attr) {
   // range annotation and ensure that this attribute's available version range
   // is fully contained within that declaration's range. If there is no such
   // enclosing declaration, then there is nothing to check.
-  std::optional<AvailabilityContext> EnclosingAnnotatedRange;
-  AvailabilityContext AttrRange =
+  std::optional<AvailabilityRange> EnclosingAnnotatedRange;
+  AvailabilityRange AttrRange =
       AvailabilityInference::availableRange(attr, Ctx);
 
   if (auto *parent = getEnclosingDeclForDecl(D)) {
@@ -2207,21 +2230,21 @@ void AttributeChecker::visitAvailableAttr(AvailableAttr *attr) {
           diagnose(enclosingDecl->getLoc(),
                    diag::availability_implicit_decl_here,
                    D->getDescriptiveKind(),
-                   prettyPlatformString(targetPlatform(Ctx.LangOpts)),
-                   AttrRange.getOSVersion().getLowerEndpoint());
+                   Ctx.getTargetPlatformStringForDiagnostics(),
+                   AttrRange.getRawMinimumVersion());
         diagnose(enclosingDecl->getLoc(),
                  diag::availability_decl_more_than_enclosing_here,
-                 prettyPlatformString(targetPlatform(Ctx.LangOpts)),
-                 EnclosingAnnotatedRange->getOSVersion().getLowerEndpoint());
+                 Ctx.getTargetPlatformStringForDiagnostics(),
+                 EnclosingAnnotatedRange->getRawMinimumVersion());
       }
     }
   }
 
-  std::optional<Diag<>> MaybeNotAllowed =
+  std::optional<Diagnostic> MaybeNotAllowed =
       TypeChecker::diagnosticIfDeclCannotBePotentiallyUnavailable(D);
   if (MaybeNotAllowed.has_value()) {
-    AvailabilityContext DeploymentRange
-        = AvailabilityContext::forDeploymentTarget(Ctx);
+    AvailabilityRange DeploymentRange =
+        AvailabilityRange::forDeploymentTarget(Ctx);
     if (EnclosingAnnotatedRange.has_value())
       DeploymentRange.intersectWith(*EnclosingAnnotatedRange);
 
@@ -3028,7 +3051,7 @@ SynthesizeMainFunctionRequest::evaluate(Evaluator &evaluator,
 
   if (!mainFunction) {
     const bool hasAsyncSupport =
-        AvailabilityContext::forDeploymentTarget(context).isContainedIn(
+        AvailabilityRange::forDeploymentTarget(context).isContainedIn(
             context.getBackDeployedConcurrencyAvailability());
     context.Diags.diagnose(attr->getLocation(),
                            diag::attr_MainType_without_main,
@@ -3620,7 +3643,8 @@ static FuncDecl *findSimilarAccessor(DeclNameRef replacedVarName,
         origStorage->getWriteImpl() == WriteImplKind::Stored)) {
     Diags.diagnose(attr->getLocation(),
                    diag::dynamic_replacement_accessor_not_explicit,
-                   (unsigned)origAccessor->getAccessorKind(),
+                   getAccessorNameForDiagnostic(origAccessor->getAccessorKind(),
+                                                /*article=*/false),
                    origStorage->getName());
     attr->setInvalid();
     return nullptr;
@@ -3835,19 +3859,29 @@ ResolveTypeEraserTypeRequest::evaluate(Evaluator &evaluator,
 }
 
 Type
-ResolveRawLayoutLikeTypeRequest::evaluate(Evaluator &evaluator,
-                                          StructDecl *sd,
-                                          RawLayoutAttr *attr) const {
-  assert(attr->LikeType);
+ResolveRawLayoutTypeRequest::evaluate(Evaluator &evaluator, StructDecl *sd,
+                                      RawLayoutAttr *attr,
+                                      bool isLikeType) const {
+  TypeRepr *typeRepr = nullptr;
+
+  if (isLikeType) {
+    assert(attr->LikeType);
+    typeRepr = attr->LikeType;
+  } else {
+    assert(attr->CountType);
+    typeRepr = attr->CountType;
+  }
 
   // If the attribute has a fixed type representation, then it was likely
   // deserialized and the type has already been computed.
-  if (auto fixedTy = dyn_cast<FixedTypeRepr>(attr->LikeType)) {
+  if (auto fixedTy = dyn_cast<FixedTypeRepr>(typeRepr)) {
     return fixedTy->getType();
   }
 
-  // Resolve the like type in the struct's context.
-  return TypeResolution::resolveContextualType(attr->LikeType, sd, std::nullopt,
+  TypeResolutionOptions options(TypeResolverContext::RawLayoutAttr);
+
+  // Resolve the type in the struct's context.
+  return TypeResolution::resolveContextualType(typeRepr, sd, options,
                                                // Unbound generics and
                                                // placeholders are not allowed
                                                // within this attribute.
@@ -4305,6 +4339,7 @@ void AttributeChecker::visitCustomAttr(CustomAttr *attr) {
   // If the nominal type is a global actor, let the global actor attribute
   // retrieval request perform checking for us.
   if (nominal->isGlobalActor()) {
+    diagnoseIsolatedDeinitInValueTypes(attr);
     (void)D->getGlobalActorAttr();
     if (auto value = dyn_cast<ValueDecl>(D)) {
       (void)getActorIsolation(value);
@@ -4799,7 +4834,8 @@ void AttributeChecker::checkBackDeployedAttrs(
 
 Type TypeChecker::checkReferenceOwnershipAttr(VarDecl *var, Type type,
                                               ReferenceOwnershipAttr *attr) {
-  auto &Diags = var->getASTContext().Diags;
+  ASTContext &ctx = var->getASTContext();
+  auto &Diags = ctx.Diags;
   auto *dc = var->getDeclContext();
 
   // Don't check ownership attribute if the type is invalid.
@@ -4888,13 +4924,19 @@ Type TypeChecker::checkReferenceOwnershipAttr(VarDecl *var, Type type,
   }
 
   // Embedded Swift prohibits weak/unowned but allows unowned(unsafe).
-  if (var->getASTContext().LangOpts.hasFeature(Feature::Embedded)) {
+  if (ctx.LangOpts.hasFeature(Feature::Embedded)) {
     if (ownershipKind == ReferenceOwnership::Weak ||
         ownershipKind == ReferenceOwnership::Unowned) {
       Diags.diagnose(attr->getLocation(), diag::weak_unowned_in_embedded_swift,
                ownershipKind);
       attr->setInvalid();
     }
+  }
+
+  // unowned(unsafe) is unsafe (duh).
+  if (ownershipKind == ReferenceOwnership::Unmanaged &&
+      ctx.LangOpts.hasFeature(Feature::WarnUnsafe)) {
+    Diags.diagnose(attr->getLocation(), diag::unowned_unsafe_is_unsafe);
   }
 
   if (attr->isInvalid())
@@ -4904,13 +4946,19 @@ Type TypeChecker::checkReferenceOwnershipAttr(VarDecl *var, Type type,
   return ReferenceStorageType::get(type, ownershipKind, var->getASTContext());
 }
 
-std::optional<Diag<>>
+std::optional<Diagnostic>
 TypeChecker::diagnosticIfDeclCannotBePotentiallyUnavailable(const Decl *D) {
   auto *DC = D->getDeclContext();
 
   // A destructor is always called if declared.
   if (auto *DD = dyn_cast<DestructorDecl>(D))
-    return diag::availability_deinit_no_potential;
+    return Diagnostic(diag::availability_decl_no_potential, D);
+
+  // Observing accessors are always called implicitly.
+  if (auto *AD = dyn_cast<AccessorDecl>(D)) {
+    if (AD->isObservingAccessor())
+      return Diagnostic(diag::availability_decl_no_potential, D);
+  }
 
   if (auto *VD = dyn_cast<VarDecl>(D)) {
     if (!VD->hasStorageOrWrapsStorage())
@@ -4944,7 +4992,7 @@ TypeChecker::diagnosticIfDeclCannotBePotentiallyUnavailable(const Decl *D) {
   return std::nullopt;
 }
 
-std::optional<Diag<>>
+std::optional<Diagnostic>
 TypeChecker::diagnosticIfDeclCannotBeUnavailable(const Decl *D) {
   auto parentIsUnavailable = [](const Decl *D) -> bool {
     if (auto *parent =
@@ -4959,7 +5007,18 @@ TypeChecker::diagnosticIfDeclCannotBeUnavailable(const Decl *D) {
     if (parentIsUnavailable(D))
       return std::nullopt;
 
-    return diag::availability_deinit_no_unavailable;
+    return Diagnostic(diag::availability_decl_no_unavailable, D);
+  }
+
+  // The conformance checker does not know what to do with unavailable
+  // associated types.
+  if (auto *AT = dyn_cast<AssociatedTypeDecl>(D))
+    return Diagnostic(diag::availability_decl_no_unavailable, D);
+
+  // Observing accessors are always called implicitly.
+  if (auto *AD = dyn_cast<AccessorDecl>(D)) {
+    if (AD->isObservingAccessor())
+      return Diagnostic(diag::availability_decl_no_unavailable, D);
   }
 
   if (auto *VD = dyn_cast<VarDecl>(D)) {
@@ -5326,8 +5385,10 @@ static DescriptiveDeclKind getAccessorDescriptiveDeclKind(AccessorKind kind) {
   case AccessorKind::Set:
     return DescriptiveDeclKind::Setter;
   case AccessorKind::Read:
+  case AccessorKind::Read2:
     return DescriptiveDeclKind::ReadAccessor;
   case AccessorKind::Modify:
+  case AccessorKind::Modify2:
     return DescriptiveDeclKind::ModifyAccessor;
   case AccessorKind::WillSet:
     return DescriptiveDeclKind::WillSet;
@@ -7090,15 +7151,29 @@ void AttributeChecker::visitNonisolatedAttr(NonisolatedAttr *attr) {
   // 'nonisolated' can be applied to global and static/class variables
   // that do not have storage.
   auto dc = D->getDeclContext();
+  auto &ctx = D->getASTContext();
+
+  if (!ctx.LangOpts.hasFeature(Feature::GlobalActorInferenceCutoff)) {
+    if (isa<ProtocolDecl>(D) || isa<ExtensionDecl>(D) || isa<ClassDecl>(D) ||
+        isa<StructDecl>(D) || isa<EnumDecl>(D)) {
+      diagnoseAndRemoveAttr(attr, diag::invalid_decl_modifier, attr);
+      return;
+    }
+  }
+
+  // nonisolated(unsafe) is unsafe, but only under strict concurrency.
+  if (attr->isUnsafe() &&
+      Ctx.LangOpts.hasFeature(Feature::WarnUnsafe) &&
+      Ctx.LangOpts.StrictConcurrencyLevel == StrictConcurrency::Complete)
+    Ctx.Diags.diagnose(attr->getLocation(), diag::nonisolated_unsafe_is_unsafe);
 
   if (auto var = dyn_cast<VarDecl>(D)) {
     // stored properties have limitations as to when they can be nonisolated.
     auto type = var->getTypeInContext();
     if (var->hasStorage()) {
       {
-        // 'nonisolated' can not be applied to mutable stored properties unless
-        // qualified as 'unsafe', or is of a Sendable type on a Sendable
-        // value type.
+        // A stored property can be 'nonisolated' if it is a 'Sendable' member
+        // of a 'Sendable' value type.
         bool canBeNonisolated = false;
         if (auto nominal = dc->getSelfStructDecl()) {
           if (nominal->getDeclaredTypeInContext()->isSendableType() &&
@@ -7107,26 +7182,35 @@ void AttributeChecker::visitNonisolatedAttr(NonisolatedAttr *attr) {
           }
         }
 
+        if (ctx.LangOpts.hasFeature(Feature::GlobalActorInferenceCutoff)) {
+          // Additionally, a stored property of a non-'Sendable' type can be
+          // explicitly marked 'nonisolated'.
+          if (auto parentDecl = dc->getDeclaredTypeInContext())
+            if (!parentDecl->isSendableType()) {
+              canBeNonisolated = true;
+            }
+        }
+
+        // Otherwise, this stored property has to be qualified as 'unsafe'.
         if (var->supportsMutation() && !attr->isUnsafe() && !canBeNonisolated) {
           diagnoseAndRemoveAttr(attr, diag::nonisolated_mutable_storage)
               .fixItInsertAfter(attr->getRange().End, "(unsafe)");
           var->diagnose(diag::nonisolated_mutable_storage_note, var);
           return;
         }
-      }
 
-      // 'nonisolated' without '(unsafe)' is not allowed on non-Sendable
-      // variables.
-      if (!attr->isUnsafe() && !type->hasError()) {
-        bool diagnosed = diagnoseIfAnyNonSendableTypes(
-            type,
-            SendableCheckContext(dc),
-            Type(),
-            SourceLoc(),
-            attr->getLocation(),
-            diag::nonisolated_non_sendable);
-        if (diagnosed)
-          return;
+        // 'nonisolated' without '(unsafe)' is not allowed on non-Sendable
+        // variables, unless they are a member of a non-'Sendable' type.
+        if (!attr->isUnsafe() && !type->hasError()) {
+          if (!(canBeNonisolated &&
+                ctx.LangOpts.hasFeature(Feature::GlobalActorInferenceCutoff))) {
+            bool diagnosed = diagnoseIfAnyNonSendableTypes(
+                type, SendableCheckContext(dc), Type(), SourceLoc(),
+                attr->getLocation(), diag::nonisolated_non_sendable);
+            if (diagnosed)
+              return;
+          }
+        }
       }
 
       if (auto nominal = dyn_cast<NominalTypeDecl>(dc)) {
@@ -7181,11 +7265,18 @@ void AttributeChecker::visitNonisolatedAttr(NonisolatedAttr *attr) {
       }
     }
 
-    // Using 'nonisolated' with wrapped properties is unsupported, because
-    // backing storage is a stored 'var' that is part of the internal state
-    // of the actor which could only be accessed in actor's isolation context.
+    // Using 'nonisolated' with lazy properties and wrapped properties is
+    // unsupported, because backing storage is a stored 'var' that is part
+    // of the internal state of the actor which could only be accessed in
+    // actor's isolation context.
     if (var->hasAttachedPropertyWrapper()) {
       diagnoseAndRemoveAttr(attr, diag::nonisolated_wrapped_property)
+        .warnUntilSwiftVersionIf(attr->isImplicit(), 6);
+      return;
+    }
+
+    if (var->getAttrs().hasAttribute<LazyAttr>()) {
+      diagnoseAndRemoveAttr(attr, diag::nonisolated_lazy)
         .warnUntilSwiftVersionIf(attr->isImplicit(), 6);
       return;
     }
@@ -7220,6 +7311,8 @@ void AttributeChecker::visitNonisolatedAttr(NonisolatedAttr *attr) {
     }
   }
 
+  diagnoseIsolatedDeinitInValueTypes(attr);
+
   if (auto VD = dyn_cast<ValueDecl>(D)) {
     //'nonisolated(unsafe)' is meaningless for computed properties, functions etc.
     auto var = dyn_cast<VarDecl>(VD);
@@ -7236,6 +7329,10 @@ void AttributeChecker::visitNonisolatedAttr(NonisolatedAttr *attr) {
   }
 }
 
+void AttributeChecker::visitIsolatedAttr(IsolatedAttr *attr) {
+  diagnoseIsolatedDeinitInValueTypes(attr);
+}
+
 void AttributeChecker::visitGlobalActorAttr(GlobalActorAttr *attr) {
   auto nominal = dyn_cast<NominalTypeDecl>(D);
   if (!nominal)
@@ -7249,6 +7346,8 @@ void AttributeChecker::visitGlobalActorAttr(GlobalActorAttr *attr) {
                            "task-to-thread concurrency model");
     return;
   }
+
+  diagnoseIsolatedDeinitInValueTypes(attr);
 
   (void)nominal->isGlobalActor();
 }
@@ -7582,6 +7681,14 @@ void AttributeChecker::visitRawLayoutAttr(RawLayoutAttr *attr) {
     (void)attr->getResolvedLikeType(sd);
   } else if (attr->getArrayLikeTypeAndCount()) {
     (void)attr->getResolvedLikeType(sd);
+    auto countType = attr->getResolvedCountType(sd);
+
+    // Raw layout's count type can only either be an archetype or an integer
+    // type.
+    if (!countType->is<IntegerType>() && !countType->is<ArchetypeType>()) {
+      diagnoseAndRemoveAttr(attr, diag::attr_rawlayout_invalid_count_type);
+      return;
+    }
   } else {
     llvm_unreachable("new unhandled rawLayout attribute form?");
   }
@@ -7633,6 +7740,15 @@ void AttributeChecker::visitWeakLinkedAttr(WeakLinkedAttr *attr) {
   diagnoseAndRemoveAttr(attr, diag::attr_unsupported_on_target,
                         attr->getAttrName(), Ctx.LangOpts.Target.str());
 }
+
+void AttributeChecker::visitUnsafeAttr(UnsafeAttr *attr) {
+  if (Ctx.LangOpts.hasFeature(Feature::AllowUnsafeAttribute))
+    return;
+
+  diagnoseAndRemoveAttr(attr, diag::unsafe_attr_disabled);
+}
+
+void AttributeChecker::visitLifetimeAttr(LifetimeAttr *attr) {}
 
 namespace {
 

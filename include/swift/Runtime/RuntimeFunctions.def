@@ -1313,6 +1313,17 @@ FUNCTION(GetTupleLayout3, swift_getTupleTypeLayout3, SwiftCC, AlwaysAvailable,
          EFFECT(NoEffect),
          UNKNOWN_MEMEFFECTS)
 
+// MetadataResponse swift_getFixedArrayTypeMetadata(MetadataRequest request,
+//                                                  intptr_t size,
+//                                                  Metadata *elt);
+FUNCTION(GetFixedArrayTypeMetadata, swift_getFixedArrayTypeMetadata, SwiftCC,
+         ValueGenericTypeAvailability,
+         RETURNS(TypeMetadataResponseTy),
+         ARGS(SizeTy, SizeTy, TypeMetadataPtrTy),
+         ATTRS(NoUnwind, WillReturn),
+         EFFECT(MetaData),
+         MEMEFFECTS(ReadOnly))
+
 // Metadata *swift_getExistentialTypeMetadata(
 //                              ProtocolClassConstraint classConstraint,
 //                              const Metadata *superclassConstraint,
@@ -2278,7 +2289,7 @@ FUNCTION(GetTypeByMangledNameInContextInMetadataState2,
          EFFECT(MetaData),
          MEMEFFECTS(ArgMemOnly))
 
-// AsyncTask *swift_task_getCurrent();s
+// AsyncTask *swift_task_getCurrent();
 FUNCTION(GetCurrentTask,
          swift_task_getCurrent, SwiftCC,
          ConcurrencyAvailability,
@@ -2347,6 +2358,20 @@ FUNCTION(TaskSwitchFunc,
          ATTRS(NoUnwind),
          EFFECT(Concurrency),
          UNKNOWN_MEMEFFECTS)
+         
+// void swift_task_deinitOnExecutor(void *object,
+//                                  DeinitWorkFunction *work,
+//                                  SerialExecutorRef newExecutor,
+//                                  size_t flags);
+FUNCTION(DeinitOnExecutorFunc,
+         swift_task_deinitOnExecutor, SwiftCC,
+         ConcurrencyAvailability,
+         RETURNS(VoidTy),
+         ARGS(Int8PtrTy, Int8PtrTy, ExecutorFirstTy, ExecutorSecondTy, SizeTy),
+         ATTRS(NoUnwind),
+         EFFECT(Concurrency),
+         UNKNOWN_MEMEFFECTS)
+
 
 // AsyncTask *swift_continuation_init(AsyncContext *continuationContext,
 //                                    AsyncContinuationFlags);
@@ -2555,7 +2580,7 @@ FUNCTION(TaskRunInline,
          EFFECT(NoEffect),
          UNKNOWN_MEMEFFECTS)
 
-// void swift_taskGroup_initialize(TaskGroup *group);
+// void swift_taskGroup_initialize(TaskGroup *group, const Metadata *T);
 FUNCTION(TaskGroupInitialize,
          swift_taskGroup_initialize, SwiftCC,
          ConcurrencyAvailability,
@@ -2565,7 +2590,7 @@ FUNCTION(TaskGroupInitialize,
          EFFECT(Concurrency),
          UNKNOWN_MEMEFFECTS)
 
-// void swift_taskGroup_initializeWithFlags(size_t flags, TaskGroup *group);
+// void swift_taskGroup_initializeWithFlags(size_t flags, TaskGroup *group, const Metadata *T);
 FUNCTION(TaskGroupInitializeWithFlags,
          swift_taskGroup_initializeWithFlags, SwiftCC,
          ConcurrencyDiscardingTaskGroupAvailability,
@@ -2573,6 +2598,20 @@ FUNCTION(TaskGroupInitializeWithFlags,
          ARGS(SizeTy,           // flags
               Int8PtrTy,        // group
               TypeMetadataPtrTy // T.Type
+         ),
+         ATTRS(NoUnwind),
+         EFFECT(Concurrency),
+         UNKNOWN_MEMEFFECTS)
+
+// void swift_taskGroup_initializeWithTaskOptions(size_t flags, TaskGroup *group, const Metadata *T, TaskOptionRecord *options);
+FUNCTION(TaskGroupInitializeWithOptions,
+         swift_taskGroup_initializeWithOptions, SwiftCC,
+         ConcurrencyDiscardingTaskGroupAvailability,
+         RETURNS(VoidTy),
+         ARGS(SizeTy,                     // flags
+              Int8PtrTy,                  // group
+              TypeMetadataPtrTy,          // T.Type
+              SwiftTaskOptionRecordPtrTy  // options
          ),
          ATTRS(NoUnwind),
          EFFECT(Concurrency),
@@ -2828,9 +2867,24 @@ FUNCTION(GenericInstantiateLayoutString,
 //                                  int32_t count);
 FUNCTION(InitRawStructMetadata,
          swift_initRawStructMetadata,
-         C_CC, AlwaysAvailable,
+         C_CC, InitRawStructMetadataAvailability,
          RETURNS(VoidTy),
          ARGS(TypeMetadataPtrTy, SizeTy, Int8PtrPtrTy->getPointerTo(0), Int32Ty),
+         ATTRS(NoUnwind),
+         EFFECT(MetaData),
+         UNKNOWN_MEMEFFECTS)
+
+// void swift_initRawStructMetadata2(Metadata *structType,
+//                                   StructLayoutFlags structLayoutFlags,
+//                                   const TypeLayout *likeType,
+//                                   intptr_t count,
+//                                   RawLayoutFlags rawLayoutFlags);
+FUNCTION(InitRawStructMetadata2,
+         swift_initRawStructMetadata2,
+         C_CC, InitRawStructMetadata2Availability,
+         RETURNS(VoidTy),
+         ARGS(TypeMetadataPtrTy, SizeTy, Int8PtrPtrTy->getPointerTo(0), SizeTy,
+              SizeTy),
          ATTRS(NoUnwind),
          EFFECT(MetaData),
          UNKNOWN_MEMEFFECTS)

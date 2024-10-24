@@ -103,6 +103,8 @@ public:
   };
 };
 
+/// FIXME: This should be removed in favor of fixing ASTDemangler to wrap types in
+/// ExistentialType where appropriate.
 static bool equalWithoutExistentialTypes(Type t1, Type t2) {
   static Type (*withoutExistentialTypes)(Type) = [](Type type) -> Type {
     return type.transformRec([](TypeBase *type) -> std::optional<Type> {
@@ -633,6 +635,12 @@ private:
           break;
         case AccessorKind::Init:
           Kind = ".init";
+          break;
+        case AccessorKind::Modify2:
+          Kind = ".modify2";
+          break;
+        case AccessorKind::Read2:
+          Kind = ".read2";
           break;
         }
 
@@ -1356,11 +1364,11 @@ createSpecializedStructOrClassType(NominalOrBoundGenericNominalType *Type,
     SmallVector<llvm::Metadata *, 16> Elements;
     for (auto *ElemDecl : Decl->getAllElements()) {
       std::optional<CompletedDebugTypeInfo> ElemDbgTy;
-      if (auto ArgTy = ElemDecl->getArgumentInterfaceType()) {
+      if (auto PayloadTy = ElemDecl->getPayloadInterfaceType()) {
         // A variant case which carries a payload.
-        ArgTy = ElemDecl->getParentEnum()->mapTypeIntoContext(ArgTy);
-        auto &TI = IGM.getTypeInfoForUnlowered(ArgTy);
-        ElemDbgTy = CompletedDebugTypeInfo::getFromTypeInfo(ArgTy, TI, IGM);
+        PayloadTy = ElemDecl->getParentEnum()->mapTypeIntoContext(PayloadTy);
+        auto &TI = IGM.getTypeInfoForUnlowered(PayloadTy);
+        ElemDbgTy = CompletedDebugTypeInfo::getFromTypeInfo(PayloadTy, TI, IGM);
         if (!ElemDbgTy) {
           // Without complete type info we can only create a forward decl.
           return DBuilder.createForwardDecl(
@@ -1432,11 +1440,11 @@ createSpecializedStructOrClassType(NominalOrBoundGenericNominalType *Type,
     SmallVector<llvm::Metadata *, 16> Elements;
     for (auto *ElemDecl : Decl->getAllElements()) {
       std::optional<DebugTypeInfo> ElemDbgTy;
-      if (auto ArgTy = ElemDecl->getArgumentInterfaceType()) {
+      if (auto PayloadTy = ElemDecl->getPayloadInterfaceType()) {
         // A variant case which carries a payload.
-        ArgTy = ElemDecl->getParentEnum()->mapTypeIntoContext(ArgTy);
+        PayloadTy = ElemDecl->getParentEnum()->mapTypeIntoContext(PayloadTy);
         ElemDbgTy = DebugTypeInfo::getFromTypeInfo(
-            ArgTy, IGM.getTypeInfoForUnlowered(ArgTy), IGM);
+            PayloadTy, IGM.getTypeInfoForUnlowered(PayloadTy), IGM);
         unsigned Offset = 0;
         auto MTy =
             createMemberType(*ElemDbgTy, ElemDecl->getBaseIdentifier().str(),
@@ -1786,6 +1794,16 @@ createSpecializedStructOrClassType(NominalOrBoundGenericNominalType *Type,
 
     // Here goes!
     switch (BaseTy->getKind()) {
+    case TypeKind::BuiltinUnboundGeneric:
+      llvm_unreachable("not a real type");
+      
+    case TypeKind::BuiltinFixedArray: {
+      // TODO: provide proper array debug info
+      unsigned FwdDeclLine = 0;
+      return createOpaqueStruct(Scope, "Builtin.FixedArray", MainFile, FwdDeclLine,
+                                SizeInBits, AlignInBits, Flags, MangledName);
+    }
+    
     case TypeKind::BuiltinPackIndex:
     case TypeKind::BuiltinInteger: {
       Encoding = llvm::dwarf::DW_ATE_unsigned;
@@ -2214,6 +2232,7 @@ createSpecializedStructOrClassType(NominalOrBoundGenericNominalType *Type,
     case TypeKind::BuiltinDefaultActorStorage:
     case TypeKind::BuiltinNonDefaultDistributedActorStorage:
     case TypeKind::SILMoveOnlyWrapped:
+    case TypeKind::Integer:
       LLVM_DEBUG(llvm::dbgs() << "Unhandled type: ";
                  DbgTy.getType()->dump(llvm::dbgs()); llvm::dbgs() << "\n");
       MangledName = "<unknown>";
@@ -2971,6 +2990,7 @@ IRGenDebugInfoImpl::emitFunction(const SILDebugScope *DS, llvm::Function *Fn,
        Rep == SILFunctionTypeRepresentation::ObjCMethod ||
        Rep == SILFunctionTypeRepresentation::WitnessMethod ||
        Rep == SILFunctionTypeRepresentation::CXXMethod ||
+       Rep == SILFunctionTypeRepresentation::CFunctionPointer ||
        Rep == SILFunctionTypeRepresentation::Thin)) {
     llvm::DISubprogram::DISPFlags SPFlags = llvm::DISubprogram::toSPFlags(
         /*IsLocalToUnit=*/Fn ? Fn->hasInternalLinkage() : true,

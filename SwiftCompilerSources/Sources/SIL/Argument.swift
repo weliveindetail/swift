@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 import Basic
+import AST
 import SILBridging
 
 /// A basic block argument.
@@ -31,9 +32,9 @@ public class Argument : Value, Hashable {
 
   public var isReborrow: Bool { bridged.isReborrow() }
 
-  public var varDecl: VarDecl? { VarDecl(bridged: bridged.getVarDecl()) }
+  public var varDecl: VarDecl? { bridged.getVarDecl().getAs(VarDecl.self) }
 
-  public var sourceLoc: SourceLoc? { varDecl?.sourceLoc }
+  public var sourceLoc: SourceLoc? { varDecl?.nameLoc }
 
   public static func ==(lhs: Argument, rhs: Argument) -> Bool {
     lhs === rhs
@@ -83,11 +84,22 @@ public struct Phi {
   // is only included here for compatibility with .sil tests that have
   // not been migrated.
   public init?(_ value: Value) {
-    guard let argument = value as? Argument else { return nil }
+    guard let argument = value as? Argument else {
+      return nil
+    }
     var preds = argument.parentBlock.predecessors
-    guard let pred = preds.next() else { return nil }
-    let term = pred.terminator
-    guard term is BranchInst || term is CondBranchInst else { return nil }
+    if let pred = preds.next() {
+      let term = pred.terminator
+      guard term is BranchInst || term is CondBranchInst else {
+        return nil
+      }
+    } else {
+      // No predecessors indicates an unreachable block (except for function arguments).
+      // Treat this like a degenerate phi so we don't consider it a terminator result.
+      if argument is FunctionArgument {
+        return nil
+      }
+    }
     self.value = argument
   }
 
@@ -284,8 +296,7 @@ public struct ArgumentConventions : Collection, CustomStringConvertible {
   }
 
   public var description: String {
-    let origTy = convention.bridgedFunctionType
-    var str = String(taking: origTy.getDebugDescription())
+    var str = convention.functionType.description
     for idx in startIndex..<indirectSILResultCount {
       str += "\n[\(idx)]  indirect result: " + self[idx].description
     }
@@ -337,8 +348,7 @@ public struct YieldConventions : Collection, CustomStringConvertible {
   }
 
   public var description: String {
-    var str = String(
-      taking: convention.bridgedFunctionType.getDebugDescription())
+    var str = convention.functionType.description
     yields.forEach {
       str += "\n      yield: " + $0.description
     }

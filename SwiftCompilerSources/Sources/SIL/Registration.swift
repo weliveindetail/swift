@@ -150,6 +150,7 @@ public func registerSILClasses() {
   register(MetatypeInst.self)
   register(ValueMetatypeInst.self)
   register(ExistentialMetatypeInst.self)
+  register(TypeValueInst.self)
   register(OpenPackElementInst.self)
   register(PackLengthInst.self)
   register(DynamicPackIndexInst.self)
@@ -255,4 +256,5 @@ public func registerSILClasses() {
   register(AwaitAsyncContinuationInst.self)
   register(CheckedCastBranchInst.self)
   register(CheckedCastAddrBranchInst.self)
+  register(ThunkInst.self)
 }

@@ -1,5 +1,5 @@
 // RUN: %empty-directory(%t)
-// RUN: %target-build-swift %s -Xfrontend -disable-availability-checking -o %t/voucher_propagation
+// RUN: %target-build-swift %s -target %target-swift-5.1-abi-triple -enable-experimental-feature IsolatedDeinit -o %t/voucher_propagation
 // RUN: %target-codesign %t/voucher_propagation
 // RUN: MallocStackLogging=1 %target-run %t/voucher_propagation
 
@@ -75,6 +75,70 @@ actor Counter {
   func get() -> Int { n }
 }
 
+actor ActorWithSelfIsolatedDeinit {
+  let expectedVoucher: voucher_t?
+  let group: DispatchGroup
+  
+  init(expectedVoucher: voucher_t?, group: DispatchGroup) {
+    self.expectedVoucher = expectedVoucher
+    self.group = group
+  }
+  
+  isolated deinit {
+    expectTrue(isCurrentExecutor(self.unownedExecutor))
+    let currentVoucher = voucher_copy()
+    expectEqual(expectedVoucher, currentVoucher)
+    os_release(currentVoucher)
+    group.leave()
+  }
+}
+
+@globalActor actor AnotherActor: GlobalActor {
+  static let shared = AnotherActor()
+  
+  func performTesting(_ work: @Sendable () -> Void) {
+    work()
+  }
+}
+
+actor ActorWithDeinitIsolatedOnAnother {
+  let expectedVoucher: voucher_t?
+  let group: DispatchGroup
+  
+  init(expectedVoucher: voucher_t?, group: DispatchGroup) {
+    self.expectedVoucher = expectedVoucher
+    self.group = group
+  }
+  
+  @AnotherActor
+  deinit {
+    expectTrue(isCurrentExecutor(AnotherActor.shared.unownedExecutor))
+    let currentVoucher = voucher_copy()
+    expectEqual(expectedVoucher, currentVoucher)
+    os_release(currentVoucher)
+    group.leave()
+  }
+}
+
+class ClassWithIsolatedDeinit {
+  let expectedVoucher: voucher_t?
+  let group: DispatchGroup
+  
+  init(expectedVoucher: voucher_t?, group: DispatchGroup) {
+    self.expectedVoucher = expectedVoucher
+    self.group = group
+  }
+  
+  @AnotherActor
+  deinit {
+    expectTrue(isCurrentExecutor(AnotherActor.shared.unownedExecutor))
+    let currentVoucher = voucher_copy()
+    expectEqual(expectedVoucher, currentVoucher)
+    os_release(currentVoucher)
+    group.leave()
+  }
+}
+
 // Make a nice string for a pointer, like what %p would produce in printf.
 func ptrstr<T>(_ ptr: T) -> String {
   "0x" + String(unsafeBitCast(ptr, to: UInt.self), radix: 16)
@@ -109,6 +173,8 @@ let voucher_adopt = lookup("voucher_adopt") as @convention(c) (voucher_t?)
     -> voucher_t?
 let os_retain = lookup("os_retain") as @convention(c) (voucher_t?) -> voucher_t?
 let os_release = lookup("os_release") as @convention(c) (voucher_t?) -> Void
+
+let isCurrentExecutor = lookup("swift_task_isCurrentExecutor") as @convention(thin) (UnownedSerialExecutor) -> Bool
 
 // Run some async code with test vouchers. Wait for the async code to complete,
 // then verify that the vouchers aren't leaked.
@@ -198,6 +264,14 @@ func withVouchers(call: @Sendable @escaping (voucher_t?, voucher_t?, voucher_t?)
 // and handles the memory management around voucher_adopt.
 func adopt(voucher: voucher_t?) {
   os_release(voucher_adopt(os_retain(voucher)))
+}
+
+// Dummy global variable to suppress stack propagation
+// TODO: Remove it after disabling allocation on stack for classes with isolated deinit
+var x: AnyObject? = nil
+func preventAllocationOnStack(_ object: AnyObject) {
+  x = object
+  x = nil
 }
 
 let tests = TestSuite("Voucher Propagation")
@@ -359,6 +433,49 @@ if #available(SwiftStdlib 5.1, *) {
      await detachedTask()
      group.wait()
    }
+  }
+  
+  tests.test("voucher propagation in isolated deinit [fast path]") {
+    withVouchers { v1, v2, v3 in
+      let group = DispatchGroup()
+      group.enter()
+      group.enter()
+      group.enter()
+      Task {
+        await AnotherActor.shared.performTesting {
+          adopt(voucher: v1)
+          preventAllocationOnStack(ClassWithIsolatedDeinit(expectedVoucher: v1, group: group))
+        }
+        await AnotherActor.shared.performTesting {
+          adopt(voucher: v2)
+          preventAllocationOnStack(ActorWithSelfIsolatedDeinit(expectedVoucher: v2, group: group))
+        }
+        await AnotherActor.shared.performTesting {
+          adopt(voucher: v3)
+          preventAllocationOnStack(ActorWithDeinitIsolatedOnAnother(expectedVoucher: v3, group: group))
+        }
+      }
+      group.wait()
+    }
+  }
+  
+  tests.test("voucher propagation in isolated deinit [slow path]") {
+    withVouchers { v1, v2, v3 in
+      let group = DispatchGroup()
+      group.enter()
+      group.enter()
+      Task {
+        do {
+          adopt(voucher: v1)
+          preventAllocationOnStack(ActorWithDeinitIsolatedOnAnother(expectedVoucher: v1, group: group))
+        }
+        do {
+          adopt(voucher: v2)
+          preventAllocationOnStack(ClassWithIsolatedDeinit(expectedVoucher: v2, group: group))
+        }
+      }
+      group.wait()
+    }
   }
 }
 

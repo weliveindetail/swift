@@ -1197,7 +1197,8 @@ public:
   CopyAddrInst *createCopyAddr(SILLocation Loc, SILValue srcAddr,
                                SILValue destAddr, IsTake_t isTake,
                                IsInitialization_t isInitialize) {
-    ASSERT(srcAddr->getType() == destAddr->getType());
+    // See rdar://135156833 for why this is not an ASSERT
+    assert(srcAddr->getType() == destAddr->getType());
     return insert(new (getModule()) CopyAddrInst(
         getSILDebugLocation(Loc), srcAddr, destAddr, isTake, isInitialize));
   }
@@ -1237,6 +1238,24 @@ public:
     return insert(ConvertFunctionInst::create(
         getSILDebugLocation(Loc), Op, Ty, getModule(), F,
         WithoutActuallyEscaping, forwardingOwnershipKind));
+  }
+
+  ThunkInst *createThunk(SILLocation Loc, SILValue Op, ThunkInst::Kind kind,
+                         SubstitutionMap substitutionMap = {}) {
+    return insert(ThunkInst::create(getSILDebugLocation(Loc), Op, getModule(),
+                                    F, kind, substitutionMap));
+  }
+
+  ThunkInst *createIdentityThunk(SILLocation Loc, SILValue Op,
+                                 SubstitutionMap substitutionMap = {}) {
+    return createThunk(Loc, Op, ThunkInst::Kind::Identity, substitutionMap);
+  }
+
+  ThunkInst *
+  createHopToMainActorIfNeededThunk(SILLocation Loc, SILValue Op,
+                                    SubstitutionMap substitutionMap = {}) {
+    return createThunk(Loc, Op, ThunkInst::Kind::HopToMainActorIfNeeded,
+                       substitutionMap);
   }
 
   ConvertEscapeToNoEscapeInst *
@@ -2413,6 +2432,13 @@ public:
                                                          SILValue boxOperand) {
     return insert(new (getModule()) ProjectExistentialBoxInst(
         getSILDebugLocation(Loc), valueTy, boxOperand));
+  }
+
+  TypeValueInst *createTypeValue(SILLocation loc, SILType valueType,
+                                 CanType paramType) {
+    return insert(TypeValueInst::create(getFunction(),
+                              getSILDebugLocation(loc),
+                              valueType, paramType));
   }
 
   //===--------------------------------------------------------------------===//

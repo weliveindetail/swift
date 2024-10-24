@@ -947,7 +947,9 @@ static bool canReplaceCopiedArg(FullApplySite Apply, SILValue Arg,
 static bool applyInvolvesOpenedArchetypeWithRoot(FullApplySite Apply,
                                                  OpenedArchetypeType *RootOA,
                                                  unsigned SkipArgIdx) {
-  if (Apply.getType().getASTType()->hasOpenedExistentialWithRoot(RootOA)) {
+  auto *env = RootOA->getGenericEnvironment();
+
+  if (Apply.getType().getASTType()->hasLocalArchetypeFromEnvironment(env)) {
     return true;
   }
 
@@ -958,7 +960,7 @@ static bool applyInvolvesOpenedArchetypeWithRoot(FullApplySite Apply,
     if (Apply.getArgument(Idx)
             ->getType()
             .getASTType()
-            ->hasOpenedExistentialWithRoot(RootOA)) {
+            ->hasLocalArchetypeFromEnvironment(env)) {
       return true;
     }
   }
@@ -1132,8 +1134,6 @@ SILInstruction *SILCombiner::createApplyWithConcreteType(
     FullApplySite Apply,
     const llvm::SmallDenseMap<unsigned, ConcreteOpenedExistentialInfo> &COAIs,
     SILBuilderContext &BuilderCtx) {
-  // Ensure that the callee is polymorphic.
-  assert(Apply.getOrigCalleeType()->isPolymorphic());
 
   // Create the new set of arguments to apply including their substitutions.
   SubstitutionMap NewCallSubs = Apply.getSubstitutionMap();
@@ -1182,7 +1182,7 @@ SILInstruction *SILCombiner::createApplyWithConcreteType(
                 return CEI.lookupExistentialConformance(proto);
               }
               return ProtocolConformanceRef(proto);
-            });
+            }, SubstFlags::SubstituteLocalArchetypes);
         continue;
       }
       // Otherwise, use the original argument.
@@ -1220,7 +1220,7 @@ SILInstruction *SILCombiner::createApplyWithConcreteType(
             return CEI.lookupExistentialConformance(proto);
           }
           return ProtocolConformanceRef(proto);
-        });
+        }, SubstFlags::SubstituteLocalArchetypes);
   }
 
   // We need to make sure that we can a) update Apply to use the new args and b)

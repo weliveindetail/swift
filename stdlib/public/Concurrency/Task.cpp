@@ -24,16 +24,17 @@
 #include "Debug.h"
 #include "Error.h"
 #include "TaskGroupPrivate.h"
+#include "TaskLocal.h"
 #include "TaskPrivate.h"
 #include "Tracing.h"
 #include "swift/ABI/Metadata.h"
 #include "swift/ABI/Task.h"
-#include "swift/ABI/TaskLocal.h"
 #include "swift/ABI/TaskOptions.h"
 #include "swift/Basic/Lazy.h"
 #include "swift/Runtime/Concurrency.h"
 #include "swift/Runtime/EnvironmentVariables.h"
 #include "swift/Runtime/HeapObject.h"
+#include "swift/Runtime/Heap.h"
 #include "swift/Threading/Mutex.h"
 #include <atomic>
 #include <new>
@@ -86,6 +87,8 @@ const void *const swift::_swift_concurrency_debug_asyncTaskSlabMetadata =
 
 bool swift::_swift_concurrency_debug_supportsPriorityEscalation =
     SWIFT_CONCURRENCY_ENABLE_PRIORITY_ESCALATION;
+
+uint32_t swift::_swift_concurrency_debug_internal_layout_version = 1;
 
 void FutureFragment::destroy() {
   auto queueHead = waitQueue.load(std::memory_order_acquire);
@@ -218,7 +221,7 @@ void NullaryContinuationJob::process(Job *_job) {
 
   auto *continuation = job->Continuation;
 
-  delete job;
+  swift_cxx_deleteObject(job);
 
   auto *context =
     static_cast<ContinuationAsyncContext*>(continuation->ResumeContext);
@@ -1394,12 +1397,15 @@ namespace continuationChecking {
 
 enum class State : uint8_t { Uninitialized, On, Off };
 
+#if !SWIFT_CONCURRENCY_EMBEDDED
 static std::atomic<State> CurrentState;
+#endif
 
 static LazyMutex ActiveContinuationsLock;
 static Lazy<std::unordered_set<AsyncTask *>> ActiveContinuations;
 
 static bool isEnabled() {
+#if !SWIFT_CONCURRENCY_EMBEDDED
   auto state = CurrentState.load(std::memory_order_relaxed);
   if (state == State::Uninitialized) {
     bool enabled =
@@ -1408,6 +1414,9 @@ static bool isEnabled() {
     CurrentState.store(state, std::memory_order_relaxed);
   }
   return state == State::On;
+#else
+  return false;
+#endif
 }
 
 static void init(AsyncTask *task) {
@@ -1712,7 +1721,7 @@ static NullaryContinuationJob*
 swift_task_createNullaryContinuationJobImpl(
     size_t priority,
     AsyncTask *continuation) {
-  auto *job = new NullaryContinuationJob(swift_task_getCurrent(),
+  auto *job = swift_cxx_newObject<NullaryContinuationJob>(swift_task_getCurrent(),
         static_cast<JobPriority>(priority), continuation);
 
   return job;
@@ -1723,56 +1732,11 @@ void swift::swift_continuation_logFailedCheck(const char *message) {
   swift_reportError(0, message);
 }
 
-SWIFT_RUNTIME_ATTRIBUTE_NORETURN
-SWIFT_CC(swift)
-static void swift_task_asyncMainDrainQueueImpl() {
-#if SWIFT_CONCURRENCY_COOPERATIVE_GLOBAL_EXECUTOR
-  bool Finished = false;
-  swift_task_donateThreadToGlobalExecutorUntil([](void *context) {
-    return *reinterpret_cast<bool*>(context);
-  }, &Finished);
-  swift_unreachable(
-      "Returned from swift_task_donateThreadToGlobalExecutorUntil()");
-#elif !SWIFT_CONCURRENCY_ENABLE_DISPATCH
-  // FIXME: consider implementing a concurrent global main queue for
-  // these environments?
-  swift_reportError(0, "operation unsupported without libdispatch: "
-                       "swift_task_asyncMainDrainQueue");
-#else
-#if defined(_WIN32)
-  HMODULE hModule = LoadLibraryW(L"dispatch.dll");
-  if (hModule == NULL) {
-    swift_Concurrency_fatalError(0,
-      "unable to load dispatch.dll: %lu", GetLastError());
-  }
-
-  auto pfndispatch_main = reinterpret_cast<void (FAR *)(void)>(
-    GetProcAddress(hModule, "dispatch_main"));
-  if (pfndispatch_main == NULL) {
-    swift_Concurrency_fatalError(0,
-      "unable to locate dispatch_main in dispatch.dll: %lu", GetLastError());
-  }
-
-  pfndispatch_main();
-  swift_unreachable("Returned from dispatch_main()");
-#else
-  // CFRunLoop is not available on non-Darwin targets.  Foundation has an
-  // implementation, but CoreFoundation is not meant to be exposed.  We can only
-  // assume the existence of `CFRunLoopRun` on Darwin platforms, where the
-  // system provides an implementation of CoreFoundation.
-#if defined(__APPLE__)
-  auto runLoop =
-      reinterpret_cast<void (*)(void)>(dlsym(RTLD_DEFAULT, "CFRunLoopRun"));
-  if (runLoop) {
-    runLoop();
-    exit(0);
-  }
-#endif
-
-    dispatch_main();
-#endif
-#endif
-}
+// This has moved; the implementation is now in the executor; the declaration
+// needs to be here because unlike other things implemented by the executor,
+// this function is a compatibility override hook.
+extern "C" SWIFT_RUNTIME_ATTRIBUTE_NORETURN SWIFT_CC(swift)
+void swift_task_asyncMainDrainQueueImpl();
 
 SWIFT_CC(swift)
 void (*swift::swift_task_asyncMainDrainQueue_hook)(
@@ -1830,4 +1794,4 @@ static void swift_task_startOnMainActorImpl(AsyncTask* task) {
   }
 #endif // #else SWIFT_STDLIB_SUPPORT_BACK_DEPLOYMENT
 
-#include COMPATIBILITY_OVERRIDE_INCLUDE_PATH
+#include "../CompatibilityOverride/CompatibilityOverrideIncludePath.h"

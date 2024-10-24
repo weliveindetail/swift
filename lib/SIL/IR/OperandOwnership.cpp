@@ -130,6 +130,7 @@ SHOULD_NEVER_VISIT_INST(IncrementProfilerCounter)
 SHOULD_NEVER_VISIT_INST(SpecifyTest)
 SHOULD_NEVER_VISIT_INST(ScalarPackIndex)
 SHOULD_NEVER_VISIT_INST(Vector)
+SHOULD_NEVER_VISIT_INST(TypeValue)
 
 #define ALWAYS_OR_SOMETIMES_LOADABLE_CHECKED_REF_STORAGE(Name, ...)            \
   SHOULD_NEVER_VISIT_INST(StrongRetain##Name)                                  \
@@ -308,6 +309,7 @@ OPERAND_OWNERSHIP(ForwardingConsume, InitExistentialValue)
 OPERAND_OWNERSHIP(ForwardingConsume, DeinitExistentialValue)
 OPERAND_OWNERSHIP(ForwardingConsume, MarkUninitialized)
 OPERAND_OWNERSHIP(ForwardingConsume, Throw)
+OPERAND_OWNERSHIP(ForwardingConsume, Thunk)
 
 // Instructions that expose a pointer within a borrow scope.
 OPERAND_OWNERSHIP(InteriorPointer, RefElementAddr)
@@ -912,13 +914,32 @@ BUILTIN_OPERAND_OWNERSHIP(InstantaneousUse, EndAsyncLetLifetime)
 BUILTIN_OPERAND_OWNERSHIP(InstantaneousUse, CreateTaskGroup)
 BUILTIN_OPERAND_OWNERSHIP(InstantaneousUse, CreateTaskGroupWithFlags)
 BUILTIN_OPERAND_OWNERSHIP(InstantaneousUse, DestroyTaskGroup)
-BUILTIN_OPERAND_OWNERSHIP(InstantaneousUse, FlowSensitiveSelfIsolation)
-BUILTIN_OPERAND_OWNERSHIP(InstantaneousUse, FlowSensitiveDistributedSelfIsolation)
 
 BUILTIN_OPERAND_OWNERSHIP(ForwardingConsume, COWBufferForReading)
 
 // This should actually never be seen in SIL
 BUILTIN_OPERAND_OWNERSHIP(GuaranteedForwarding, ExtractFunctionIsolation)
+
+static OperandOwnership
+visitAnyFlowSensitiveSelfIsolation(BuiltinInst *bi) {
+  // In potentially-delegating initializers, the operand will be the
+  // address of the box instead of the actor instance.
+  auto operand = bi->getOperand(0);
+  if (operand->getType().isAddress())
+    return OperandOwnership::TrivialUse;
+  return OperandOwnership::InstantaneousUse;
+}
+
+OperandOwnership
+OperandOwnershipBuiltinClassifier
+::visitFlowSensitiveSelfIsolation(BuiltinInst *bi, StringRef attr) {
+  return visitAnyFlowSensitiveSelfIsolation(bi);
+}
+OperandOwnership
+OperandOwnershipBuiltinClassifier
+::visitFlowSensitiveDistributedSelfIsolation(BuiltinInst *bi, StringRef attr) {
+  return visitAnyFlowSensitiveSelfIsolation(bi);
+}
 
 OperandOwnership
 OperandOwnershipBuiltinClassifier

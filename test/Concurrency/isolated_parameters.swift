@@ -1,6 +1,6 @@
-// RUN: %target-swift-frontend  -disable-availability-checking -strict-concurrency=complete %s -emit-sil -o /dev/null -verify -DALLOW_TYPECHECKER_ERRORS -verify-additional-prefix typechecker-
+// RUN: %target-swift-frontend -target %target-swift-5.1-abi-triple -strict-concurrency=complete %s -emit-sil -o /dev/null -verify -DALLOW_TYPECHECKER_ERRORS -verify-additional-prefix typechecker-
 
-// RUN: %target-swift-frontend  -disable-availability-checking -strict-concurrency=complete %s -emit-sil -o /dev/null -verify -verify-additional-prefix tns-
+// RUN: %target-swift-frontend -target %target-swift-5.1-abi-triple -strict-concurrency=complete %s -emit-sil -o /dev/null -verify -verify-additional-prefix tns-
 
 // REQUIRES: asserts
 // REQUIRES: concurrency
@@ -483,7 +483,7 @@ actor A2 {
     await { (self: isolated Self) in }(self)
     // expected-typechecker-error@-1 {{cannot convert value of type 'A2' to expected argument type 'Self'}}
     await { (self: isolated Self?) in }(self)
-    // expected-typechecker-error@-1 {{cannot convert value of type 'A2' to expected argument type 'Self?'}}
+    // expected-typechecker-error@-1 {{cannot convert value of type 'A2' to expected argument type 'Self'}}
 #endif
   }
   nonisolated func f2() async -> Self {

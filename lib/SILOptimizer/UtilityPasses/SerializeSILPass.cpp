@@ -331,6 +331,7 @@ static bool hasOpaqueArchetype(TypeExpansionContext context,
   case SILInstructionKind::PackElementGetInst:
   case SILInstructionKind::PackElementSetInst:
   case SILInstructionKind::TuplePackElementAddrInst:
+  case SILInstructionKind::TypeValueInst:
     // Handle by operand and result check.
     break;
 
@@ -359,6 +360,15 @@ static bool hasOpaqueArchetype(TypeExpansionContext context,
       }
     });
     return wouldChange;
+  }
+
+  case SILInstructionKind::ThunkInst: {
+    auto subs = cast<ThunkInst>(&inst)->getSubstitutionMap();
+    for (auto ty : subs.getReplacementTypes()) {
+      if (opaqueArchetypeWouldChange(context, ty->getCanonicalType()))
+        return true;
+    }
+    break;
   }
 
   case SILInstructionKind::ApplyInst:
