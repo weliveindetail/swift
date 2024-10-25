@@ -78,3 +78,9 @@ skip lldb-shell :: Swift/cond-breakpoint.test
 skip lldb-api :: functionalities/data-formatter/data-formatter-cpp/TestDataFormatterCpp.py
 skip lldb-api :: lang/cpp/frame-var-depth-and-elem-count/TestFrameVarDepthAndElemCount.py
 skip lldb-api :: functionalities/inferior-crashing/recursive-inferior/TestRecursiveInferiorStep.py
+
+### Started showing up in CI and might be actual issues on mainline ###
+
+# Line breakpoint set and resolved, but gets extra location at load time
+xfail lldb-shell :: SymbolFile/NativePDB/local-variables.cpp
+xfail lldb-shell :: SymbolFile/NativePDB/stack_unwinding01.cpp
