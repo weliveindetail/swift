@@ -35,10 +35,6 @@ skip lldb-api :: tools/lldb-server/TestGdbRemoteThreadsInStopReply.py
 ### Tests that fail reliably ###
 
 xfail lldb-api :: commands/expression/nested/TestNestedExpressions.py
-xfail lldb-api :: commands/settings/use_source_cache/TestUseSourceCache.py
-xfail lldb-api :: lang/cpp/class-template-non-type-parameter-pack/TestClassTemplateNonTypeParameterPack.py
-xfail lldb-api :: lang/cpp/class-template-type-parameter-pack/TestClassTemplateTypeParameterPack.py
-xfail lldb-api :: lang/cpp/complete-type-check/TestCppIsTypeComplete.py
 xfail lldb-api :: lang/cpp/unique-types4/TestUniqueTypes4.py
 xfail lldb-shell :: Recognizer/verbose_trap.test
 xfail lldb-shell :: Settings/TestEchoCommands.test
