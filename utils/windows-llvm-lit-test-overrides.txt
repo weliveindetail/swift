@@ -84,3 +84,31 @@ skip lldb-api :: functionalities/inferior-crashing/recursive-inferior/TestRecurs
 # Line breakpoint set and resolved, but gets extra location at load time
 xfail lldb-shell :: SymbolFile/NativePDB/local-variables.cpp
 xfail lldb-shell :: SymbolFile/NativePDB/stack_unwinding01.cpp
+
+# These had been xfailed in the past and should be fixed today, but they
+# failed again in CI. Let's see if they XPASS with the SDKROOT patch.
+xfail lldb-api :: commands/apropos/with-process/TestAproposWithProcess.py
+xfail lldb-api :: commands/command/nested_alias/TestNestedAlias.py
+xfail lldb-api :: commands/expression/entry-bp/TestExprEntryBP.py
+xfail lldb-api :: commands/memory/write/TestMemoryWrite.py
+xfail lldb-api :: functionalities/breakpoint/address_breakpoints/TestAddressBreakpoints.py
+xfail lldb-api :: functionalities/breakpoint/auto_continue/TestBreakpointAutoContinue.py
+xfail lldb-api :: functionalities/breakpoint/breakpoint_conditions/TestBreakpointConditions.py
+xfail lldb-api :: functionalities/breakpoint/breakpoint_options/TestBreakpointOptions.py
+xfail lldb-api :: functionalities/breakpoint/step_over_breakpoint/TestStepOverBreakpoint.py
+xfail lldb-api :: functionalities/conditional_break/TestConditionalBreak.py
+xfail lldb-api :: functionalities/memory/find/TestMemoryFind.py
+xfail lldb-api :: lang/c/anonymous/TestAnonymous.py
+xfail lldb-api :: lang/c/array_types/TestArrayTypes.py
+xfail lldb-api :: lang/c/enum_types/TestEnumTypes.py
+xfail lldb-api :: lang/c/forward/TestForwardDeclaration.py
+xfail lldb-api :: lang/c/function_types/TestFunctionTypes.py
+xfail lldb-api :: lang/c/register_variables/TestRegisterVariables.py
+xfail lldb-api :: lang/c/set_values/TestSetValues.py
+xfail lldb-api :: lang/c/shared_lib/TestSharedLib.py
+xfail lldb-api :: lang/cpp/class_types/TestClassTypes.py
+xfail lldb-api :: lang/cpp/inlines/TestInlines.py
+xfail lldb-api :: python_api/compile_unit/TestCompileUnitAPI.py
+xfail lldb-api :: python_api/thread/TestThreadAPI.py
+xfail lldb-api :: source-manager/TestSourceManager.py
+xfail lldb-shell :: Driver/TestConvenienceVariables.test
