@@ -962,7 +962,7 @@ function Build-CMakeProject {
       # which doesn't provide the _Builtin_float module.
       TryAdd-KeyValue $Defines SWIFT_BUILD_CLANG_OVERLAYS_SKIP_BUILTIN_FLOAT YES
     }
-
+    # RelWithDebInfo
     TryAdd-KeyValue $Defines CMAKE_BUILD_TYPE Release
     TryAdd-KeyValue $Defines CMAKE_MT "mt"
 
@@ -978,7 +978,7 @@ function Build-CMakeProject {
 
     $CXXFlags = @()
     if ($Platform -eq "Windows") {
-      $CXXFlags += $CFlags.Clone() + @("/Zc:__cplusplus")
+      $CXXFlags += $CFlags.Clone() + @("/Zc:__cplusplus") # , "/fsanitize=address"
     }
 
     if ($UseMSVCCompilers.Contains("C") -Or $UseMSVCCompilers.Contains("CXX") -Or
@@ -999,6 +999,8 @@ function Build-CMakeProject {
         Append-FlagsDefine $Defines CMAKE_EXE_LINKER_FLAGS "--ld-path=$ldPath"
       }
     }
+
+    $env:Path += ";C:\LLVM-17\lib\clang\16\lib\windows"
 
     if ($UseMSVCCompilers.Contains("C")) {
       TryAdd-KeyValue $Defines CMAKE_C_COMPILER cl
@@ -1031,7 +1033,9 @@ function Build-CMakeProject {
       if ($UseBuiltCompilers.Contains("C")) {
         TryAdd-KeyValue $Defines CMAKE_C_COMPILER ([IO.Path]::Combine($CompilersBinaryCache, "bin", $Driver))
       } else {
-        TryAdd-KeyValue $Defines CMAKE_C_COMPILER (Join-Path -Path (Get-PinnedToolchainTool) -ChildPath $Driver)
+        Write-Host "CMAKE_C_COMPILER"
+        Write-Host (Join-Path -Path "C:\LLVM-17\bin" -ChildPath $Driver)
+        TryAdd-KeyValue $Defines CMAKE_C_COMPILER (Join-Path -Path "C:\LLVM-17\bin" -ChildPath $Driver)
       }
       TryAdd-KeyValue $Defines CMAKE_C_COMPILER_TARGET $Arch.LLVMTarget
 
@@ -1050,7 +1054,10 @@ function Build-CMakeProject {
       if ($UseBuiltCompilers.Contains("CXX")) {
         TryAdd-KeyValue $Defines CMAKE_CXX_COMPILER ([IO.Path]::Combine($CompilersBinaryCache, "bin", $Driver))
       } else {
-        TryAdd-KeyValue $Defines CMAKE_CXX_COMPILER (Join-Path -Path (Get-PinnedToolchainTool) -ChildPath $Driver)
+        Write-Host "CMAKE_CXX_COMPILER"
+        Write-Host (Join-Path -Path "C:\LLVM-17\bin" -ChildPath $Driver)
+        TryAdd-KeyValue $Defines CMAKE_CXX_COMPILER (Join-Path -Path "C:\LLVM-17\bin" -ChildPath $Driver)
+        Append-FlagsDefine $Defines CMAKE_CXX_FLAGS "-D_DISABLE_VECTOR_ANNOTATION"
       }
       TryAdd-KeyValue $Defines CMAKE_CXX_COMPILER_TARGET $Arch.LLVMTarget
 
@@ -1498,20 +1505,24 @@ function Build-Compilers() {
       }
     }
 
+      #-UseMSVCCompilers C,CXX `
     Build-CMakeProject `
       -Src $SourceCache\llvm-project\llvm `
       -Bin $CompilersBinaryCache `
       -InstallTo "$($Arch.ToolchainInstallRoot)\usr" `
       -Arch $Arch `
       -AddAndroidCMakeEnv:$Android `
-      -UseMSVCCompilers C,CXX `
-      -UsePinnedCompilers Swift `
+      -UsePinnedCompilers C,CXX,Swift `
       -BuildTargets $Targets `
       -CacheScript $SourceCache\swift\cmake\caches\Windows-$($Arch.LLVMName).cmake `
       -Defines ($TestingDefines + @{
         CLANG_TABLEGEN = (Join-Path -Path $BuildTools -ChildPath "clang-tblgen.exe");
         CLANG_TIDY_CONFUSABLE_CHARS_GEN = (Join-Path -Path $BuildTools -ChildPath "clang-tidy-confusable-chars-gen.exe");
         CMAKE_Swift_FLAGS = $SwiftFlags;
+        LLVM_USE_SANITIZER = "Address";
+        LLVM_BUILD_RUNTIME = "NO";
+        LLVM_RUNTIME_TARGETS = "$($Arch.LLVMTarget)";
+        LLVM_PARALLEL_LINK_JOBS = "1";
         LLDB_PYTHON_EXE_RELATIVE_PATH = "python.exe";
         LLDB_PYTHON_EXT_SUFFIX = ".pyd";
         LLDB_PYTHON_RELATIVE_PATH = "lib/site-packages";
@@ -1523,6 +1534,7 @@ function Build-Compilers() {
         LLVM_TABLEGEN = (Join-Path $BuildTools -ChildPath "llvm-tblgen.exe");
         LLVM_USE_HOST_TOOLS = "NO";
         Python3_EXECUTABLE = "$python";
+        #LLVM_PARALLEL_COMPILE_JOBS = "1";
         Python3_INCLUDE_DIR = "$BinaryCache\Python$($Arch.CMakeName)-$PythonVersion\tools\include";
         Python3_LIBRARY = "$BinaryCache\Python$($Arch.CMakeName)-$PythonVersion\tools\libs\python39.lib";
         Python3_ROOT_DIR = "$BinaryCache\Python$($Arch.CMakeName)-$PythonVersion\tools";
@@ -2665,8 +2677,8 @@ try {
 Fetch-Dependencies
 
 if (-not $SkipBuild) {
-  Invoke-BuildStep Build-CMark $BuildArch
-  Invoke-BuildStep Build-BuildTools $BuildArch
+  #Invoke-BuildStep Build-CMark $BuildArch
+  #Invoke-BuildStep Build-BuildTools $BuildArch
   if ($IsCrossCompiling) {
     Invoke-BuildStep Build-Compilers -Build $BuildArch
   }
@@ -2674,7 +2686,7 @@ if (-not $SkipBuild) {
     Invoke-BuildStep Build-RegsGen2 $BuildArch
   }
 
-  Invoke-BuildStep Build-CMark $HostArch
+  #Invoke-BuildStep Build-CMark $HostArch
   Invoke-BuildStep Build-Compilers $HostArch
 }
 
