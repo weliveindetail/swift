@@ -311,6 +311,14 @@ static void updateRuntimeLibraryPaths(SearchPathOptions &SearchPathOpts,
     RuntimeLibraryImportPaths.push_back(std::string(LibPath.str()));
   }
   SearchPathOpts.setRuntimeLibraryImportPaths(RuntimeLibraryImportPaths);
+
+  // Temporary dump for fixing CI:
+  fprintf(stderr, "RuntimeLibraryPaths:\n");
+  for (const auto &P : SearchPathOpts.RuntimeLibraryPaths)
+    fprintf(stderr, "%s\n", P.c_str());
+  fprintf(stderr, "RuntimeLibraryImportPaths:\n");
+  for (const auto &P : RuntimeLibraryImportPaths)
+    fprintf(stderr, "%s\n", P.c_str());
 }
 
 static void
