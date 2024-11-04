@@ -1481,7 +1481,8 @@ function Build-Compilers() {
         cp "$RuntimeBinaryCache\$SwiftrtSubdir\$($Arch.LLVMName)\swiftrt.obj" "$CompilersBinaryCache\$SwiftrtSubdir"
         Write-Host "Copying '$RuntimeBinaryCache\bin\swiftCore.dll' to '$CompilersBinaryCache\bin'"
         cp "$RuntimeBinaryCache\bin\swiftCore.dll" "$CompilersBinaryCache\bin"
-        exit(1)
+        Write-Host "Copying '$RuntimeBinaryCache\bin\swiftCore.dll' to '$CompilersBinaryCache\$SwiftrtSubdir'"
+        cp "$RuntimeBinaryCache\bin\swiftCore.dll" "$CompilersBinaryCache\$SwiftrtSubdir"
 
         $TestingDefines += @{
           LLDB_INCLUDE_TESTS = "YES";
