@@ -1477,9 +1477,12 @@ function Build-Compilers() {
         cp $RuntimeBinaryCache\bin\swiftCore.dll "$CompilersBinaryCache\lib\site-packages\lldb"
 
         # Runtime dependencies of repl_swift.exe
-        $SwiftrtSubdir = "lib\swift\windows\$($Arch.LLVMName)"
-        cp "$RuntimeBinaryCache\$SwiftrtSubdir\swiftrt.obj" "$CompilersBinaryCache\$SwiftrtSubdir"
+        $SwiftrtSubdir = "lib\swift\windows"
+        Write-Host "Copying '$RuntimeBinaryCache\$SwiftrtSubdir\$($Arch.LLVMName)\swiftrt.obj' to '$CompilersBinaryCache\$SwiftrtSubdir'"
+        cp "$RuntimeBinaryCache\$SwiftrtSubdir\$($Arch.LLVMName)\swiftrt.obj" "$CompilersBinaryCache\$SwiftrtSubdir"
+        Write-Host "Copying '$RuntimeBinaryCache\bin\swiftCore.dll' to '$CompilersBinaryCache\bin'"
         cp "$RuntimeBinaryCache\bin\swiftCore.dll" "$CompilersBinaryCache\bin"
+        exit(1)
 
         $TestingDefines += @{
           LLDB_INCLUDE_TESTS = "YES";
