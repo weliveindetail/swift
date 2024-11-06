@@ -728,11 +728,13 @@ function Fetch-Dependencies {
 
   DownloadAndVerify $PinnedBuild "$BinaryCache\$PinnedToolchain.exe" $PinnedSHA256
 
-  # The make tool isn't part of MSYS, but we need it for LLDB tests
-  $GnuWin32MakeURL = "https://downloads.sourceforge.net/project/ezwinports/make-4.4.1-without-guile-w32-bin.zip"
-  $GnuWin32MakeHash = "fb66a02b530f7466f6222ce53c0b602c5288e601547a034e4156a512dd895ee7"
-  DownloadAndVerify $GnuWin32MakeURL "$BinaryCache\GnuWin32Make-4.4.1.zip" $GnuWin32MakeHash
-  Extract-ZipFile GnuWin32Make-4.4.1.zip $BinaryCache GnuWin32Make-4.4.1
+  if ($Test -contains "lldb") {
+    # The make tool isn't part of MSYS
+    $GnuWin32MakeURL = "https://downloads.sourceforge.net/project/ezwinports/make-4.4.1-without-guile-w32-bin.zip"
+    $GnuWin32MakeHash = "fb66a02b530f7466f6222ce53c0b602c5288e601547a034e4156a512dd895ee7"
+    DownloadAndVerify $GnuWin32MakeURL "$BinaryCache\GnuWin32Make-4.4.1.zip" $GnuWin32MakeHash
+    Extract-ZipFile GnuWin32Make-4.4.1.zip $BinaryCache GnuWin32Make-4.4.1
+  }
 
   # TODO(compnerd) stamp/validate that we need to re-extract
   New-Item -ItemType Directory -ErrorAction Ignore $BinaryCache\toolchains | Out-Null
@@ -1466,23 +1468,23 @@ function Build-Compilers() {
         $env:LIT_FILTER_OUT="($($TestsToSkip -join '|'))"
 
         # Install packages that the test suite requires
-        & $python -m pip install psutil
-        & $python -m pip install packaging
-        & $python -m pip install unittest2
+        & $python -m pip install --user psutil
+        & $python -m pip install --user packaging
+        & $python -m pip install --user unittest2
 
         $RuntimeBinaryCache = Get-TargetProjectBinaryCache $Arch Runtime
 
-        # Transitive dependency if _lldb.pyd
+        # Transitive dependency of _lldb.pyd
         cp $RuntimeBinaryCache\bin\swiftCore.dll "$CompilersBinaryCache\lib\site-packages\lldb"
 
         # Runtime dependencies of repl_swift.exe
-        $SwiftrtSubdir = "lib\swift\windows"
-        Write-Host "Copying '$RuntimeBinaryCache\$SwiftrtSubdir\$($Arch.LLVMName)\swiftrt.obj' to '$CompilersBinaryCache\$SwiftrtSubdir'"
-        cp "$RuntimeBinaryCache\$SwiftrtSubdir\$($Arch.LLVMName)\swiftrt.obj" "$CompilersBinaryCache\$SwiftrtSubdir"
+        $SwiftRTSubdir = "lib\swift\windows"
+        Write-Host "Copying '$RuntimeBinaryCache\$SwiftRTSubdir\$($Arch.LLVMName)\swiftrt.obj' to '$CompilersBinaryCache\$SwiftRTSubdir'"
+        cp "$RuntimeBinaryCache\$SwiftRTSubdir\$($Arch.LLVMName)\swiftrt.obj" "$CompilersBinaryCache\$SwiftRTSubdir"
         Write-Host "Copying '$RuntimeBinaryCache\bin\swiftCore.dll' to '$CompilersBinaryCache\bin'"
         cp "$RuntimeBinaryCache\bin\swiftCore.dll" "$CompilersBinaryCache\bin"
-        Write-Host "Copying '$RuntimeBinaryCache\bin\swiftCore.dll' to '$CompilersBinaryCache\$SwiftrtSubdir'"
-        cp "$RuntimeBinaryCache\bin\swiftCore.dll" "$CompilersBinaryCache\$SwiftrtSubdir"
+        Write-Host "Copying '$RuntimeBinaryCache\bin\swiftCore.dll' to '$CompilersBinaryCache\$SwiftRTSubdir'"
+        cp "$RuntimeBinaryCache\bin\swiftCore.dll" "$CompilersBinaryCache\$SwiftRTSubdir"
 
         $TestingDefines += @{
           LLDB_INCLUDE_TESTS = "YES";
