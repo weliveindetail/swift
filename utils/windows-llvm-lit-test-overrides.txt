@@ -55,6 +55,53 @@ xfail lldb-shell :: SwiftREPL/SwiftInterface.test
 xfail lldb-shell :: SymbolFile/DWARF/x86/dead-code-filtering.yaml
 xfail lldb-unit :: Symbol/./SymbolTests.exe
 
+### Tests that pass locally, but not in CI ###
+
+# https://github.com/swiftlang/llvm-project/issues/9539
+xfail lldb-shell :: SwiftREPL/Basic.test
+xfail lldb-shell :: SwiftREPL/Class.test
+xfail lldb-shell :: SwiftREPL/ComputedProperties.test
+xfail lldb-shell :: SwiftREPL/Deadlock.test
+xfail lldb-shell :: SwiftREPL/DiagnosticOptions.test
+xfail lldb-shell :: SwiftREPL/Dict.test
+xfail lldb-shell :: SwiftREPL/ErrorReturn.test
+xfail lldb-shell :: SwiftREPL/ExclusivityREPL.test
+xfail lldb-shell :: SwiftREPL/GenericTypealias.test
+xfail lldb-shell :: SwiftREPL/Generics.test
+xfail lldb-shell :: SwiftREPL/ImportError.test
+xfail lldb-shell :: SwiftREPL/MetatypeRepl.test
+xfail lldb-shell :: SwiftREPL/Optional.test
+xfail lldb-shell :: SwiftREPL/PropertyWrapperTopLevel.test
+xfail lldb-shell :: SwiftREPL/RecursiveClass.test
+xfail lldb-shell :: SwiftREPL/Redefinition.test
+xfail lldb-shell :: SwiftREPL/RedirectInput.test
+xfail lldb-shell :: SwiftREPL/RedirectInputNoSuchFile.test
+xfail lldb-shell :: SwiftREPL/Regex.test
+xfail lldb-shell :: SwiftREPL/SimpleExpressions.test
+xfail lldb-shell :: SwiftREPL/Struct.test
+xfail lldb-shell :: SwiftREPL/Subclassing.test
+xfail lldb-shell :: SwiftREPL/SwiftInterfaceForceModuleLoadMode.test
+xfail lldb-shell :: SwiftREPL/SwiftTypeLookup.test
+xfail lldb-shell :: SwiftREPL/SyntaxError.test
+xfail lldb-shell :: SwiftREPL/UninitVariables.test
+xfail lldb-shell :: SwiftREPL/ZeroSizeStruct.test
+xfail lldb-shell :: SwiftREPL/enum-singlecase.test
+xfail lldb-shell :: SwiftREPL/one-char-string.test
+
+# https://github.com/swiftlang/llvm-project/issues/9620
+xfail lldb-shell :: Swift/expression-diagnostics.test
+
+# https://github.com/swiftlang/llvm-project/issues/9540
+xfail lldb-shell :: SymbolFile/NativePDB/local-variables.cpp
+xfail lldb-shell :: SymbolFile/NativePDB/stack_unwinding01.cpp
+
+TODO: confirm
+xfail lldb-shell :: Commands/command-process-launch-user-entry.test
+xfail lldb-unit :: Symbol/ClangArgs/UniquingCollisionWithAddedFlags
+xfail lldb-unit :: Symbol/ClangArgs/UniquingCollisionWithExistingFlags
+xfail lldb-unit :: Symbol/TestSwiftASTContext/ApplyWorkingDir
+xfail lldb-unit :: Symbol/TestSwiftASTContext/PluginPath
+
 ### Unconfirmed timeouts/xfails/xpasses: skip for conservative runs ###
 
 # https://github.com/llvm/llvm-project/issues/62983
