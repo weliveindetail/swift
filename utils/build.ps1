@@ -779,6 +779,28 @@ function Fetch-Dependencies {
       Write-Output "Installing 'setuptools-75.1.0-py3-none-any.whl' ..."
       Invoke-Program -OutNull $Python '-I' -m pip install "$BinaryCache\python\setuptools-75.1.0-py3-none-any.whl" --disable-pip-version-check
     }
+    if ($Test -contains "lldb") {
+      # 'psutil' is required for testing LLDB
+      try {
+        Invoke-Program -OutNull $Python -c 'import psutil' *> $null
+      } catch {
+        $WheelURL = "https://files.pythonhosted.org/packages/11/91/87fa6f060e649b1e1a7b19a4f5869709fbf750b7c8c262ee776ec32f3028/psutil-6.1.0-cp37-abi3-win_amd64.whl"
+        $WheelHash = "a8fb3752b491d246034fa4d279ff076501588ce8cbcdbb62c32fd7a377d996be"
+        DownloadAndVerify $WheelURL "$BinaryCache\python\psutil-6.1.0-cp37-abi3-win_amd64.whl" $WheelHash
+        Write-Output "Installing 'psutil-6.1.0-cp37-abi3-win_amd64.whl' ..."
+        Invoke-Program -OutNull $Python '-I' -m pip install "$BinaryCache\python\psutil-6.1.0-cp37-abi3-win_amd64.whl" --disable-pip-version-check
+      }
+      # 'unittest2' is required for testing LLDB
+      try {
+        Invoke-Program -OutNull $Python -c 'import unittest2' *> $null
+      } catch {
+        $WheelURL = "https://files.pythonhosted.org/packages/72/20/7f0f433060a962200b7272b8c12ba90ef5b903e218174301d0abfd523813/unittest2-1.1.0-py2.py3-none-any.whl"
+        $WheelHash = "13f77d0875db6d9b435e1d4f41e74ad4cc2eb6e1d5c824996092b3430f088bb8"
+        DownloadAndVerify $WheelURL "$BinaryCache\python\unittest2-1.1.0-py2.py3-none-any.whl" $WheelHash
+        Write-Output "Installing 'unittest2-1.1.0-py2.py3-none-any.whl' ..."
+        Invoke-Program -OutNull $Python '-I' -m pip install "$BinaryCache\python\unittest2-1.1.0-py2.py3-none-any.whl" --disable-pip-version-check
+      }
+    }
   }
 
   Download-Python $HostArchName
@@ -1496,14 +1518,8 @@ function Build-Compilers() {
         $env:LIT_XFAIL=$TestsToXFail -join ";"
         $env:LIT_FILTER_OUT="($($TestsToSkip -join '|'))"
 
-        # Install packages that the test suite requires
-        & $python -m pip install --user psutil
-        & $python -m pip install --user packaging
-        & $python -m pip install --user unittest2
-
-        $RuntimeBinaryCache = Get-TargetProjectBinaryCache $Arch Runtime
-
         # Transitive dependency of _lldb.pyd
+        $RuntimeBinaryCache = Get-TargetProjectBinaryCache $Arch Runtime
         cp $RuntimeBinaryCache\bin\swiftCore.dll "$CompilersBinaryCache\lib\site-packages\lldb"
 
         # Runtime dependencies of repl_swift.exe
