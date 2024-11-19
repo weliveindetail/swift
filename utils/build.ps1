@@ -351,7 +351,7 @@ function Get-BisonExecutable {
 }
 
 function Get-PythonExecutable {
-  return [IO.Path]::Combine($BinaryCache, "Python$($HostArch.CMakeName)-$PythonVersion", "tools", "python.exe")
+  return Join-Path -Path $BinaryCache -ChildPath "Python$($HostArch.CMakeName)-$PythonVersion\tools\python.exe"
 }
 
 function Get-InstallDir($Arch) {
