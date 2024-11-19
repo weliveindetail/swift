@@ -53,7 +53,24 @@ xfail lldb-shell :: SwiftREPL/OptionalUnowned.test
 xfail lldb-shell :: SwiftREPL/RedirectInputUnreadable.test
 xfail lldb-shell :: SwiftREPL/SwiftInterface.test
 xfail lldb-shell :: SymbolFile/DWARF/x86/dead-code-filtering.yaml
-xfail lldb-unit :: Symbol/./SymbolTests.exe
+
+### Unittests that fail reliably ###
+
+# Skip SymbolTests because we cannot xfail unittests by name. We would need to
+# specify their indexes, but these are subject to change. Right now, failures
+# are:
+#  FAIL: lldb-unit :: Symbol/./SymbolTests.exe/24/27 (1 of 27)
+#  FAIL: lldb-unit :: Symbol/./SymbolTests.exe/21/27 (3 of 27)
+#  FAIL: lldb-unit :: Symbol/./SymbolTests.exe/22/27 (9 of 27)
+#  FAIL: lldb-unit :: Symbol/./SymbolTests.exe/25/27 (11 of 27)
+#
+# Respective tests are:
+#  lldb-unit :: Symbol/./SymbolTests.exe/ClangArgs/UniquingCollisionWithAddedFlags
+#  lldb-unit :: Symbol/./SymbolTests.exe/ClangArgs/UniquingCollisionWithExistingFlags
+#  lldb-unit :: Symbol/./SymbolTests.exe/TestSwiftASTContext/ApplyWorkingDir
+#  lldb-unit :: Symbol/./SymbolTests.exe/TestSwiftASTContext/PluginPath
+#
+skip lldb-unit :: Symbol/./SymbolTests.exe
 
 ### Tests that pass locally, but not in CI ###
 
@@ -94,13 +111,6 @@ xfail lldb-shell :: Swift/expression-diagnostics.test
 # https://github.com/swiftlang/llvm-project/issues/9540
 xfail lldb-shell :: SymbolFile/NativePDB/local-variables.cpp
 xfail lldb-shell :: SymbolFile/NativePDB/stack_unwinding01.cpp
-
-TODO: confirm
-xfail lldb-shell :: Commands/command-process-launch-user-entry.test
-xfail lldb-unit :: Symbol/ClangArgs/UniquingCollisionWithAddedFlags
-xfail lldb-unit :: Symbol/ClangArgs/UniquingCollisionWithExistingFlags
-xfail lldb-unit :: Symbol/TestSwiftASTContext/ApplyWorkingDir
-xfail lldb-unit :: Symbol/TestSwiftASTContext/PluginPath
 
 ### Unconfirmed timeouts/xfails/xpasses: skip for conservative runs ###
 
