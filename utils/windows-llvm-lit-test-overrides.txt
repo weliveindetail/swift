@@ -123,6 +123,9 @@ xfail lang/c/local_variables/TestLocalVariables.py
 # https://github.com/swiftlang/llvm-project/issues/9637
 xfail lldb-api :: python_api/address_range/TestAddressRange.py
 
+# https://github.com/swiftlang/llvm-project/issues/9643
+xfail lldb-shell :: Commands/command-process-launch-user-entry.test
+
 ### Unconfirmed timeouts/xfails/xpasses: skip for conservative runs ###
 
 # https://github.com/llvm/llvm-project/issues/62983
