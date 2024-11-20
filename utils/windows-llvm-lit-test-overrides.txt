@@ -120,6 +120,7 @@ xfail lldb-shell :: Swift/expression-diagnostics.test
 # https://github.com/swiftlang/llvm-project/issues/9540
 xfail lldb-shell :: SymbolFile/NativePDB/local-variables.cpp
 xfail lldb-shell :: SymbolFile/NativePDB/stack_unwinding01.cpp
+xfail lang/c/local_variables/TestLocalVariables.py
 
 ### Unconfirmed timeouts/xfails/xpasses: skip for conservative runs ###
 
