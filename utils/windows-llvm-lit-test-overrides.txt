@@ -32,6 +32,12 @@ skip lldb-api :: macosx/duplicate-archive-members/TestDuplicateMembers.py
 
 skip lldb-api :: tools/lldb-server/TestGdbRemoteThreadsInStopReply.py
 
+### Tests that pass accidentally ###
+
+https://github.com/llvm/llvm-project/issues/116972
+skip lldb-api :: api/command-return-object/TestSBCommandReturnObject.py
+skip lldb-api :: api/multiple-targets/TestMultipleTargets.py
+
 ### Tests that fail reliably ###
 
 xfail lldb-api :: lang/cpp/unique-types4/TestUniqueTypes4.py
