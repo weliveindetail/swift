@@ -66,6 +66,9 @@ If no such Windows SDK is installed, it will be downloaded from nuget.
 Include the ds2 remote debug server in the SDK.
 This component is currently only supported in Android builds.
 
+.PARAMETER IncludeSanitizers
+If set, include ASAN and UBSAN artifacts in the toolchain.
+
 .PARAMETER SkipBuild
 If set, does not run the build phase.
 
@@ -1877,6 +1880,21 @@ function Build-CURL([Platform]$Platform, $Arch) {
     })
 }
 
+function Build-Sanitizers([Platform]$Platform, $Arch, $InstallTo) {
+  Isolate-EnvVars {
+    # Use configured compilers
+    Build-CMakeProject `
+      -Src $SourceCache\llvm-project\runtimes `
+      -Bin "$(Get-HostProjectBinaryCache Compilers)\runtimes\runtimes-$($Arch.LLVMTarget)-bins" `
+      -InstallTo $InstallTo `
+      -Arch $Arch `
+      -Platform $Platform `
+      -Defines (@{
+        COMPILER_RT_BUILD_SANITIZERS = "YES"
+      })
+  }
+}
+
 function Build-Runtime([Platform]$Platform, $Arch) {
   $PlatformDefines = @{}
   if ($Platform -eq "Android") {
@@ -2869,6 +2887,11 @@ if (-not $SkipBuild) {
 
   Invoke-BuildStep Build-CMark $HostArch
   Invoke-BuildStep Build-Compilers $HostArch
+  if ($IncludeSanitizers) {
+    $InstallTo = "$($HostArch.ToolchainInstallRoot)\usr"
+    Invoke-BuildStep Build-Sanitizers Windows $ArchX64 $InstallTo
+    Invoke-BuildStep Build-Sanitizers Windows $ArchARM64 $InstallTo
+  }
 }
 
 if ($Clean) {
