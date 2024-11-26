@@ -69,6 +69,10 @@ This component is currently only supported in Android builds.
 .PARAMETER BuildSanitizers
 If set, include ASAN and UBSAN artifacts in the toolchain.
 
+.PARAMETER UseSanitizers
+If set, build the toolchain with ASAN and UBSAN. It will implicitly use pinned
+compilers and generate DWARF debug-info (instead of MSVC and codeview).
+
 .PARAMETER SkipBuild
 If set, does not run the build phase.
 
@@ -139,6 +143,7 @@ param(
   [switch] $SkipPackaging = $false,
   [switch] $IncludeDS2 = $false,
   [switch] $BuildSanitizers = $false,
+  [switch] $UseSanitizers = $false,
   [string[]] $Test = @(),
   [string] $Stage = "",
   [string] $BuildTo = "",
@@ -1580,14 +1585,26 @@ function Build-Compilers() {
       }
     }
 
+    if ($UseSanitizers) {
+      # Default debug-info format here is DWARF
+      $LangsLLVM = @("C","CXX","Swift")
+      $LangsMSVC = @()
+      $TestingDefines += @{
+        LLVM_USE_SANITIZER = "Address;Undefined"
+      }
+    } else {
+      $LangsLLVM = @("Swift")
+      $LangsMSVC = @("C,CXX")
+    }
+
     Build-CMakeProject `
       -Src $SourceCache\llvm-project\llvm `
       -Bin $CompilersBinaryCache `
       -InstallTo "$($Arch.ToolchainInstallRoot)\usr" `
       -Arch $Arch `
       -AddAndroidCMakeEnv:$Android `
-      -UseMSVCCompilers C,CXX `
-      -UsePinnedCompilers Swift `
+      -UseMSVCCompilers $LangsMSVC `
+      -UsePinnedCompilers $LangsLLVM `
       -BuildTargets $Targets `
       -CacheScript $SourceCache\swift\cmake\caches\Windows-$($Arch.LLVMName).cmake `
       -Defines ($TestingDefines + @{
