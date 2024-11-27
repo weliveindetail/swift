@@ -772,6 +772,14 @@ function Fetch-Dependencies {
 
   DownloadAndVerify $PinnedSwift "$BinaryCache\$PinnedToolchain.exe"
 
+  if ($Test -contains "lldb") {
+    # The make tool isn't part of MSYS
+    $GnuWin32MakeURL = "https://downloads.sourceforge.net/project/ezwinports/make-4.4.1-without-guile-w32-bin.zip"
+    $GnuWin32MakeHash = "fb66a02b530f7466f6222ce53c0b602c5288e601547a034e4156a512dd895ee7"
+    DownloadAndVerify $GnuWin32MakeURL "$BinaryCache\GnuWin32Make-4.4.1.zip" $GnuWin32MakeHash
+    Extract-ZipFile GnuWin32Make-4.4.1.zip $BinaryCache GnuWin32Make-4.4.1
+  }
+
   # TODO(compnerd) stamp/validate that we need to re-extract
   New-Item -ItemType Directory -ErrorAction Ignore $BinaryCache\toolchains | Out-Null
   Extract-Toolchain "$PinnedToolchain.exe" $BinaryCache $PinnedToolchain
@@ -804,7 +812,7 @@ function Fetch-Dependencies {
     $CanonicalName = [IO.Path]::GetFileNameWithoutExtension($Info.URL)
     
     try {
-      Invoke-Program -OutNull $(Get-PythonExecutable) -c 'import $name' *> $null
+      Invoke-Program -OutNull $(Get-PythonExecutable) -c "import $Name" *> $null
     } catch {
       DownloadAndVerify $Name "$BinaryCache\python\$CanonicalName.whl"
       Write-Output "Installing '$CanonicalName.whl' ..."
@@ -1263,6 +1271,13 @@ function Build-CMakeProject {
     } elseif ($UseSwiftCompiler -eq [Compiler]::Pinned) {
       $env:Path = "$(Get-PinnedToolchainRuntime);${env:Path}"
     }
+
+    if ($ToBatch) {
+      Write-Output ""
+      Write-Output "echo cmake.exe $cmakeGenerateArgs"
+    } else {
+      Write-Host "cmake.exe $cmakeGenerateArgs"
+    }
     Invoke-Program cmake.exe @cmakeGenerateArgs
 
     # Build all requested targets
@@ -1517,7 +1532,48 @@ function Build-Compilers() {
 
       if ($TestClang) { $Targets += @("check-clang") }
       if ($TestLLD) { $Targets += @("check-lld") }
-      if ($TestLLDB) { $Targets += @("check-lldb") }
+      if ($TestLLDB) {
+        $Targets += @("check-lldb")
+
+        function Select-LitTestOverrides {
+          param([string] $TestStatus)
+
+          $MatchingLines=(Get-Content $PSScriptRoot/windows-llvm-lit-test-overrides.txt | Select-String -Pattern "`^${TestStatus}.*$")
+          $TestNames=$MatchingLines | ForEach-Object { ($_ -replace $TestStatus,"").Trim() }
+          return $TestNames
+        }
+
+        # Override some test results with llvm-lit.
+        $TestsToXFail=Select-LitTestOverrides "xfail"
+        $TestsToSkip=Select-LitTestOverrides "skip"
+        $env:LIT_XFAIL=$TestsToXFail -join ";"
+        $env:LIT_FILTER_OUT="($($TestsToSkip -join '|'))"
+
+        # Transitive dependency of _lldb.pyd
+        $RuntimeBinaryCache = Get-TargetProjectBinaryCache $Arch Runtime
+        cp $RuntimeBinaryCache\bin\swiftCore.dll "$CompilersBinaryCache\lib\site-packages\lldb"
+
+        # Runtime dependencies of repl_swift.exe
+        $SwiftRTSubdir = "lib\swift\windows"
+        Write-Host "Copying '$RuntimeBinaryCache\$SwiftRTSubdir\$($Arch.LLVMName)\swiftrt.obj' to '$CompilersBinaryCache\$SwiftRTSubdir'"
+        cp "$RuntimeBinaryCache\$SwiftRTSubdir\$($Arch.LLVMName)\swiftrt.obj" "$CompilersBinaryCache\$SwiftRTSubdir"
+        Write-Host "Copying '$RuntimeBinaryCache\bin\swiftCore.dll' to '$CompilersBinaryCache\bin'"
+        cp "$RuntimeBinaryCache\bin\swiftCore.dll" "$CompilersBinaryCache\bin"
+        Write-Host "Copying '$RuntimeBinaryCache\bin\swiftCore.dll' to '$CompilersBinaryCache\$SwiftRTSubdir'"
+        cp "$RuntimeBinaryCache\bin\swiftCore.dll" "$CompilersBinaryCache\$SwiftRTSubdir"
+
+        $TestingDefines += @{
+          LLDB_INCLUDE_TESTS = "YES";
+          # Check for required Python modules in CMake
+          LLDB_ENFORCE_STRICT_TEST_REQUIREMENTS = "YES";
+          # No watchpoint support on windows: https://github.com/llvm/llvm-project/issues/24820
+          LLDB_TEST_USER_ARGS = "--skip-category=watchpoint";
+          # gtest sharding breaks llvm-lit's --xfail and LIT_XFAIL inputs: https://github.com/llvm/llvm-project/issues/102264
+          LLVM_LIT_ARGS = "-v --no-gtest-sharding --show-xfail --show-unsupported";
+          # LLDB Unit tests link against this library
+          LLVM_UNITTEST_LINK_FLAGS = "$($Arch.SDKInstallRoot)\usr\lib\swift\windows\$($Arch.LLVMName)\swiftCore.lib";
+        }
+      }
       if ($TestLLVM) { $Targets += @("check-llvm") }
       if ($TestSwift) { $Targets += @("check-swift", "SwiftCompilerPlugin") }
     } else {
@@ -1541,6 +1597,15 @@ function Build-Compilers() {
       $SwiftFlags += @("-Xcc", "-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH");
     }
 
+    if (-not $IsCrossCompiling) {
+      # We hardcode LLVM_DEFAULT_TARGET_TRIPLE to x86_64-unknown-windows-msvc,
+      # but the host triple might be inferred as x86_64-pc-windows-msvc, which
+      # causes llvm-lit to skip `REQUIRES: native` tests.
+      $TestingDefines += @{
+        LLVM_HOST_TRIPLE = $Arch.LLVMTarget
+      }
+    }
+
     Build-CMakeProject `
       -Src $SourceCache\llvm-project\llvm `
       -Bin $CompilersBinaryCache `
@@ -1562,6 +1627,7 @@ function Build-Compilers() {
         LLDB_PYTHON_EXT_SUFFIX = ".pyd";
         LLDB_PYTHON_RELATIVE_PATH = "lib/site-packages";
         LLDB_TABLEGEN = (Join-Path -Path $BuildTools -ChildPath "lldb-tblgen.exe");
+        LLDB_TEST_MAKE = "$BinaryCache\GnuWin32Make-4.4.1\bin\make.exe";
         LLVM_CONFIG_PATH = (Join-Path -Path $BuildTools -ChildPath "llvm-config.exe");
         LLVM_EXTERNAL_SWIFT_SOURCE_DIR = "$SourceCache\swift";
         LLVM_NATIVE_TOOL_DIR = $BuildTools;
