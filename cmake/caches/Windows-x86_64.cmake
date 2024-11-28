@@ -49,7 +49,6 @@ foreach(target ${LLVM_RUNTIME_TARGETS})
         compiler-rt
       CACHE STRING "")
   set(RUNTIMES_${target}_CMAKE_MT mt CACHE STRING "")
-  set(RUNTIMES_${target}_CMAKE_SYSTEM_NAME Windows CACHE STRING "")
   set(RUNTIMES_${target}_CMAKE_BUILD_TYPE Release CACHE STRING "")
   set(RUNTIMES_${target}_COMPILER_RT_BUILD_BUILTINS YES CACHE BOOL "")
   set(RUNTIMES_${target}_COMPILER_RT_BUILD_CRT NO CACHE BOOL "")
@@ -57,9 +56,31 @@ foreach(target ${LLVM_RUNTIME_TARGETS})
   set(RUNTIMES_${target}_COMPILER_RT_BUILD_ORC NO CACHE BOOL "")
   set(RUNTIMES_${target}_COMPILER_RT_BUILD_PROFILE YES CACHE BOOL "")
   set(RUNTIMES_${target}_COMPILER_RT_BUILD_XRAY NO CACHE BOOL "")
-  # Sanitizers will be configured, but not built. We have separate build
-  # steps for that, because we need a different shell for each target.
-  set(RUNTIMES_${target}_COMPILER_RT_BUILD_SANITIZERS NO CACHE BOOL "")
+
+  if(${target} MATCHES windows-msvc)
+    # Sanitizers will be configured, but not built. We have separate build
+    # steps for that, because we need a different shell for each target.
+    set(RUNTIMES_${target}_COMPILER_RT_BUILD_SANITIZERS NO CACHE BOOL "")
+    set(RUNTIMES_${target}_CMAKE_SYSTEM_NAME Windows CACHE STRING "")
+  elseif(${target} MATCHES linux-android)
+    set(RUNTIMES_${target}_COMPILER_RT_BUILD_SANITIZERS YES CACHE BOOL "")
+    set(RUNTIMES_${target}_CMAKE_SYSTEM_NAME Android CACHE STRING "")
+    # Use a single 'linux' directory and arch-based lib names on Android.
+    set(RUNTIMES_${target}_LLVM_ENABLE_PER_TARGET_RUNTIME_DIR NO CACHE BOOL "")
+    if(${target} MATCHES aarch64)
+      set(RUNTIMES_${target}_CMAKE_ANDROID_ARCH_ABI arm64-v8a CACHE STRING "")
+    elseif(${target} MATCHES armv7)
+      set(RUNTIMES_${target}_CMAKE_ANDROID_ARCH_ABI armeabi-v7a CACHE STRING "")
+    elseif(${target} MATCHES i686)
+      set(RUNTIMES_${target}_CMAKE_ANDROID_ARCH_ABI x86 CACHE STRING "")
+    else()
+      set(RUNTIMES_${target}_CMAKE_ANDROID_ARCH_ABI x86_64 CACHE STRING "")
+    endif()
+    set(RUNTIMES_${target}_CMAKE_ANDROID_NDK $ENV{NDKPATH} CACHE PATH "")
+    set(RUNTIMES_${target}_CMAKE_ANDROID_API 28 CACHE STRING "")
+    set(RUNTIMES_${target}_CMAKE_C_COMPILER_TARGET "${target}28" CACHE STRING "")
+    set(RUNTIMES_${target}_CMAKE_CXX_COMPILER_TARGET "${target}28" CACHE STRING "")
+  endif()
 endforeach()
 
 foreach(target ${LLVM_BUILTIN_TARGETS})
