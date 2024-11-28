@@ -1895,18 +1895,24 @@ function Build-CURL([Platform]$Platform, $Arch) {
 }
 
 function Build-Sanitizers([Platform]$Platform, $Arch, $InstallTo) {
-  Isolate-EnvVars {
-    # Use configured compilers
-    Build-CMakeProject `
-      -Src $SourceCache\llvm-project\runtimes `
-      -Bin "$(Get-HostProjectBinaryCache Compilers)\runtimes\runtimes-$($Arch.LLVMTarget)-bins" `
-      -InstallTo $InstallTo `
-      -Arch $Arch `
-      -Platform $Platform `
-      -Defines (@{
-        COMPILER_RT_BUILD_SANITIZERS = "YES"
-      })
+  # LLVM runtime directories have no version suffix
+  $ArchName = $Arch.LLVMTarget.Replace("$AndroidAPILevel","")
+  $PreconfiguredDir = "$(Get-HostProjectBinaryCache Compilers)\runtimes\runtimes-$ArchName-bins"
+  if (-not $(Test-Path $PreconfiguredDir)) {
+    throw "Cannot build $($Arch.LLVMTarget) sanitizers: build directory '$PreconfiguredDir' not preconfigured from LLVM"
   }
+
+  # Use configured compilers
+  Build-CMakeProject `
+    -Src $SourceCache\llvm-project\runtimes `
+    -Bin $PreconfiguredDir `
+    -InstallTo $InstallTo `
+    -AddAndroidCMakeEnv:$Android `
+    -Arch $Arch `
+    -Platform $Platform `
+    -Defines (@{
+      COMPILER_RT_BUILD_SANITIZERS = "YES"
+    })
 }
 
 function Build-Runtime([Platform]$Platform, $Arch) {
@@ -2890,25 +2896,26 @@ try {
 Fetch-Dependencies
 
 if (-not $SkipBuild) {
-  Invoke-BuildStep Build-CMark $BuildArch
-  Invoke-BuildStep Build-BuildTools $BuildArch
-  if ($IsCrossCompiling) {
-    Invoke-BuildStep Build-Compilers -Build $BuildArch
-  }
-  if ($IncludeDS2) {
-    Invoke-BuildStep Build-RegsGen2 $BuildArch
-  }
-
-  Invoke-BuildStep Build-CMark $HostArch
+#  Invoke-BuildStep Build-CMark $BuildArch
+#  Invoke-BuildStep Build-BuildTools $BuildArch
+#  if ($IsCrossCompiling) {
+#    Invoke-BuildStep Build-Compilers -Build $BuildArch
+#  }
+#  if ($IncludeDS2) {
+#    Invoke-BuildStep Build-RegsGen2 $BuildArch
+#  }
+#
+#  Invoke-BuildStep Build-CMark $HostArch
   Invoke-BuildStep Build-Compilers $HostArch
-
+  exit(0)
+#
   $InstallTo = "$($HostArch.ToolchainInstallRoot)\usr"
-  foreach ($Arch in $WindowsSDKArchs) {
-    Invoke-BuildStep Build-Sanitizers Windows $Arch $InstallTo
-  }
-  foreach ($Arch in $AndroidSDKArchs) {
-    Invoke-BuildStep Build-Sanitizers Windows $Arch $InstallTo
-  }
+#  foreach ($Arch in $WindowsSDKArchs) {
+#    Invoke-BuildStep Build-Sanitizers Windows $Arch $InstallTo
+#  }
+#  foreach ($Arch in $AndroidSDKArchs) {
+#    Invoke-BuildStep Build-Sanitizers Android $Arch $InstallTo
+#  }
 }
 
 if ($Clean) {
