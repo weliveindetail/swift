@@ -2906,9 +2906,6 @@ if (-not $SkipBuild) {
   foreach ($Arch in $WindowsSDKArchs) {
     Invoke-BuildStep Build-Sanitizers Windows $Arch $InstallTo
   }
-  foreach ($Arch in $AndroidSDKArchs) {
-    Invoke-BuildStep Build-Sanitizers Windows $Arch $InstallTo
-  }
 }
 
 if ($Clean) {
