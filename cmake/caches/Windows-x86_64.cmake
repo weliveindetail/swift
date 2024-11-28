@@ -31,8 +31,6 @@ set(default_targets
       x86_64-unknown-windows-msvc
       aarch64-unknown-windows-msvc
       i686-unknown-windows-msvc)
-set(LLVM_RUNTIME_TARGETS ${default_targets} CACHE STRING "")
-
 # Build the android builtins if NDK path is provided.
 if(NOT "$ENV{NDKPATH}" STREQUAL "")
   list(APPEND default_targets
@@ -43,6 +41,7 @@ if(NOT "$ENV{NDKPATH}" STREQUAL "")
 endif()
 
 set(LLVM_BUILTIN_TARGETS ${default_targets} CACHE STRING "")
+set(LLVM_RUNTIME_TARGETS ${default_targets} CACHE STRING "")
 
 foreach(target ${LLVM_RUNTIME_TARGETS})
   set(RUNTIMES_${target}_LLVM_ENABLE_RUNTIMES
