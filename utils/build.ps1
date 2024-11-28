@@ -1590,7 +1590,7 @@ function Build-Compilers() {
       }
     } else {
       $LangsLLVM = @("Swift")
-      $LangsMSVC = @("C,CXX")
+      $LangsMSVC = @("C","CXX")
     }
 
     Build-CMakeProject `
