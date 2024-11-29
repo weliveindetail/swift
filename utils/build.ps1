@@ -828,6 +828,13 @@ function Get-PinnedToolchainVersion() {
   throw "PinnedVersion must be set"
 }
 
+$DriverBinaryCache = Get-HostProjectBinaryCache Driver
+$CompilersBinaryCache = if ($IsCrossCompiling) {
+  Get-BuildProjectBinaryCache Compilers
+} else {
+  Get-HostProjectBinaryCache Compilers
+}
+
 function Get-ClangDriverName([Platform] $Platform, [string] $Lang) {
   switch ($Platform) {
     Windows {
@@ -911,13 +918,6 @@ function Build-CMakeProject {
     if ($Platform -eq "Windows") {
       Invoke-VsDevShell $Arch
     }
-
-    $CompilersBinaryCache = if ($IsCrossCompiling) {
-      Get-BuildProjectBinaryCache Compilers
-    } else {
-      Get-HostProjectBinaryCache Compilers
-    }
-    $DriverBinaryCache = Get-HostProjectBinaryCache Driver
 
     if ($EnableCaching) {
       $env:SCCACHE_DIRECT = "true"
@@ -1439,11 +1439,6 @@ function Build-Compilers() {
   )
 
   Isolate-EnvVars {
-    $CompilersBinaryCache = if ($Build) {
-      Get-BuildProjectBinaryCache Compilers
-    } else {
-      Get-HostProjectBinaryCache Compilers
-    }
     $BuildTools = Join-Path -Path (Get-BuildProjectBinaryCache BuildTools) -ChildPath bin
 
     if ($TestClang -or $TestLLD -or $TestLLDB -or $TestLLVM -or $TestSwift) {
@@ -1794,12 +1789,6 @@ function Build-Runtime([Platform]$Platform, $Arch) {
 
   Isolate-EnvVars {
     $env:Path = "$(Get-CMarkBinaryCache $Arch)\src;$(Get-PinnedToolchainRuntime);${env:Path}"
-
-    $CompilersBinaryCache = if ($IsCrossCompiling) {
-      Get-BuildProjectBinaryCache Compilers
-    } else {
-      Get-HostProjectBinaryCache Compilers
-    }
 
     Build-CMakeProject `
       -Src $SourceCache\swift `
