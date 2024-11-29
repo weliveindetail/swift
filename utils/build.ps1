@@ -891,6 +891,22 @@ enum Platform {
   Android
 }
 
+enum Compiler {
+  Unspecified = 0
+  UseMSVC = 1
+  UsePinned
+  UseBuilt
+  UseNDK
+}
+
+function Get-ToolchainTool([Compiler] $Compiler, [string] $Name) {
+  switch ($Compiler) {
+    UsePinned { return Get-PinnedToolchainTool $Name }
+    UseBuilt { return Get-BuiltToolchainTool $Name }
+    UseNDK { return "$(Get-AndroidNDKPath)\toolchains\llvm\prebuilt\windows-x86_64\bin\$Name" }
+  }
+}
+
 function Build-CMakeProject {
   [CmdletBinding(PositionalBinding = $false)]
   param(
@@ -910,6 +926,24 @@ function Build-CMakeProject {
     [hashtable] $Defines = @{}, # Values are either single strings or arrays of flags
     [string[]] $BuildTargets = @()
   )
+
+  # Should we switch params to this notation for all? C, CXX, ASM, Swift?
+  $C = [Compiler]::Unspecified
+  $CXX = [Compiler]::Unspecified
+  if ($UseMSVCCompilers.Contains("C")) {
+    $C = [Compiler]::UseMSVC
+  } elseif ($UsePinnedCompilers.Contains("C")) {
+    $C = [Compiler]::UsePinned
+  } elseif ($UseBuiltCompilers.Contains("C")) {
+    $C = [Compiler]::UseBuilt
+  }
+  if ($UseMSVCCompilers.Contains("CXX")) {
+    $CXX = [Compiler]::UseMSVC
+  } elseif ($UsePinnedCompilers.Contains("CXX")) {
+    $CXX = [Compiler]::UsePinned
+  } elseif ($UseBuiltCompilers.Contains("CXX")) {
+    $CXX = [Compiler]::UseBuilt
+  }
 
   if ($ToBatch) {
     Write-Output ""
@@ -968,9 +1002,8 @@ function Build-CMakeProject {
       } else {
         throw "Missing CMake and Ninja in the visual studio installation that are needed to build Android"
       }
-      $androidNDKPath = Get-AndroidNDKPath
-      TryAdd-KeyValue $Defines CMAKE_C_COMPILER (Join-Path -Path $androidNDKPath -ChildPath "toolchains\llvm\prebuilt\windows-x86_64\bin\clang.exe")
-      TryAdd-KeyValue $Defines CMAKE_CXX_COMPILER (Join-Path -Path $androidNDKPath -ChildPath "toolchains\llvm\prebuilt\windows-x86_64\bin\clang++.exe")
+      TryAdd-KeyValue $Defines CMAKE_C_COMPILER (Get-ToolchainTool "UseNDK" "clang.exe")
+      TryAdd-KeyValue $Defines CMAKE_CXX_COMPILER (Get-ToolchainTool "UseNDK" "clang++.exe")
       TryAdd-KeyValue $Defines CMAKE_ANDROID_API "$AndroidAPILevel"
       TryAdd-KeyValue $Defines CMAKE_ANDROID_ARCH_ABI $Arch.AndroidArchABI
       TryAdd-KeyValue $Defines CMAKE_ANDROID_NDK "$androidNDKPath"
@@ -1000,9 +1033,7 @@ function Build-CMakeProject {
       $CXXFlags += $CFlags.Clone() + @("/Zc:__cplusplus")
     }
 
-    if ($UseMSVCCompilers.Contains("C") -Or $UseMSVCCompilers.Contains("CXX") -Or
-        $UseBuiltCompilers.Contains("C") -Or $UseBuiltCompilers.Contains("CXX") -Or
-        $UsePinnedCompilers.Contains("C") -Or $UsePinnedCompilers.Contains("CXX")) {
+    if ($C -Or $CXX) {
       if ($DebugInfo -and $Platform -eq "Windows") {
         Append-FlagsDefine $Defines CMAKE_MSVC_DEBUG_INFORMATION_FORMAT Embedded
         Append-FlagsDefine $Defines CMAKE_POLICY_CMP0141 NEW
@@ -1019,14 +1050,14 @@ function Build-CMakeProject {
       }
     }
 
-    if ($UseMSVCCompilers.Contains("C")) {
+    if ($C -eq "UseMSVC") {
       TryAdd-KeyValue $Defines CMAKE_C_COMPILER cl
       if ($EnableCaching) {
         TryAdd-KeyValue $Defines CMAKE_C_COMPILER_LAUNCHER sccache
       }
       Append-FlagsDefine $Defines CMAKE_C_FLAGS $CFlags
     }
-    if ($UseMSVCCompilers.Contains("CXX")) {
+    if ($CXX -eq "UseMSVC") {
       TryAdd-KeyValue $Defines CMAKE_CXX_COMPILER cl
       if ($EnableCaching) {
         TryAdd-KeyValue $Defines CMAKE_CXX_COMPILER_LAUNCHER sccache
@@ -1045,13 +1076,9 @@ function Build-CMakeProject {
         TryAdd-KeyValue $Defines CMAKE_ASM_COMPILE_OPTIONS_MSVC_RUNTIME_LIBRARY_MultiThreadedDLL "/MD"
       }
     }
-    if ($UsePinnedCompilers.Contains("C") -Or $UseBuiltCompilers.Contains("C")) {
+    if ($C -eq "UsePinned" -Or $C -eq "UseBuilt") {
       $Driver = (Get-ClangDriverName $Platform -Lang "C")
-      if ($UseBuiltCompilers.Contains("C")) {
-        TryAdd-KeyValue $Defines CMAKE_C_COMPILER (Get-BuiltToolchainTool $Driver)
-      } else {
-        TryAdd-KeyValue $Defines CMAKE_C_COMPILER (Get-PinnedToolchainTool $Driver)
-      }
+      TryAdd-KeyValue $Defines CMAKE_C_COMPILER (Get-ToolchainTool -Compiler $C -Name $Driver)
       TryAdd-KeyValue $Defines CMAKE_C_COMPILER_TARGET $Arch.LLVMTarget
 
       if (-not (Test-CMakeAtLeast -Major 3 -Minor 26 -Patch 3) -and $Platform -eq "Windows") {
@@ -1064,13 +1091,9 @@ function Build-CMakeProject {
       }
       Append-FlagsDefine $Defines CMAKE_C_FLAGS $CFlags
     }
-    if ($UsePinnedCompilers.Contains("CXX") -Or $UseBuiltCompilers.Contains("CXX")) {
+    if ($CXX -eq "UsePinned" -Or $CXX -eq "UseBuilt") {
       $Driver = (Get-ClangDriverName $Platform -Lang "CXX")
-      if ($UseBuiltCompilers.Contains("CXX")) {
-        TryAdd-KeyValue $Defines CMAKE_CXX_COMPILER (Get-BuiltToolchainTool $Driver)
-      } else {
-        TryAdd-KeyValue $Defines CMAKE_CXX_COMPILER (Get-PinnedToolchainTool $Driver)
-      }
+      TryAdd-KeyValue $Defines CMAKE_C_COMPILER (Get-ToolchainTool -Compiler $CXX -Name $Driver)
       TryAdd-KeyValue $Defines CMAKE_CXX_COMPILER_TARGET $Arch.LLVMTarget
 
       if (-not (Test-CMakeAtLeast -Major 3 -Minor 26 -Patch 3) -and $Platform -eq "Windows") {
