@@ -833,7 +833,6 @@ function Get-PinnedToolchainVersion() {
   throw "PinnedVersion must be set"
 }
 
-$DriverBinaryCache = Get-HostProjectBinaryCache Driver
 $CompilersBinaryCache = if ($IsCrossCompiling) {
   Get-BuildProjectBinaryCache Compilers
 } else {
@@ -941,8 +940,9 @@ function Build-CMakeProject {
     }
 
     # TODO(compnerd) workaround swiftc.exe symlink not existing.
+    $DriverToolDir = "$(Get-HostProjectBinaryCache Driver)\bin"
     if ($UseSwiftSwiftDriver) {
-      Copy-Item -Force ([IO.Path]::Combine($DriverBinaryCache, "bin", "swift-driver.exe")) ([IO.Path]::Combine($DriverBinaryCache, "bin", "swiftc.exe"))
+      Copy-Item -Force "$DriverToolDir\swift-driver.exe" "$DriverToolDir\swiftc.exe"
     }
 
     # Add additional defines (unless already present)
@@ -1087,7 +1087,7 @@ function Build-CMakeProject {
       $SwiftArgs = @()
 
       if ($UseSwiftSwiftDriver) {
-        TryAdd-KeyValue $Defines CMAKE_Swift_COMPILER ([IO.Path]::Combine($DriverBinaryCache, "bin", "swiftc.exe"))
+        TryAdd-KeyValue $Defines CMAKE_Swift_COMPILER "$DriverToolDir\swiftc.exe"
       } elseif ($UseBuiltCompilers.Contains("Swift")) {
         TryAdd-KeyValue $Defines CMAKE_Swift_COMPILER (Get-BuiltToolchainTool "swiftc.exe")
       } else {
