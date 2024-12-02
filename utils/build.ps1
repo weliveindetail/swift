@@ -840,7 +840,7 @@ $CompilersBinaryCache = if ($IsCrossCompiling) {
 }
 
 function Get-BuiltToolchainTool([string] $Name) {
-  return if ($Name) { "$CompilersBinaryCache\bin\$Name" } else { "$CompilersBinaryCache\bin" }
+  return $(if ($Name) { "$CompilersBinaryCache\bin\$Name" } else { "$CompilersBinaryCache\bin" })
 }
 
 function Get-ClangDriverName([Platform] $Platform, [string] $Lang) {
@@ -927,9 +927,11 @@ function Build-CMakeProject {
     [string[]] $BuildTargets = @()
   )
 
-  # Should we switch params to this notation for all? C, CXX, ASM, Swift?
+  # TODO: Switch params and callsites to this notation
   $C = [Compiler]::Unspecified
   $CXX = [Compiler]::Unspecified
+  $ASM = [Compiler]::Unspecified
+  $Swift = [Compiler]::Unspecified
   if ($UseMSVCCompilers.Contains("C")) {
     $C = [Compiler]::MSVC
   } elseif ($UsePinnedCompilers.Contains("C")) {
@@ -943,6 +945,20 @@ function Build-CMakeProject {
     $CXX = [Compiler]::Pinned
   } elseif ($UseBuiltCompilers.Contains("CXX")) {
     $CXX = [Compiler]::Built
+  }
+  if ($UseMSVCCompilers.Contains("ASM")) {
+    $ASM = [Compiler]::MSVC
+  } elseif ($UsePinnedCompilers.Contains("ASM")) {
+    $ASM = [Compiler]::Pinned
+  } elseif ($UseBuiltCompilers.Contains("ASM")) {
+    $ASM = [Compiler]::Built
+  }
+  if ($UseMSVCCompilers.Contains("Swift")) {
+    $Swift = [Compiler]::MSVC
+  } elseif ($UsePinnedCompilers.Contains("Swift")) {
+    $Swift = [Compiler]::Pinned
+  } elseif ($UseBuiltCompilers.Contains("Swift")) {
+    $Swift = [Compiler]::Built
   }
 
   if ($ToBatch) {
@@ -1064,13 +1080,9 @@ function Build-CMakeProject {
       }
       Append-FlagsDefine $Defines CMAKE_CXX_FLAGS $CXXFlags
     }
-    if ($UsePinnedCompilers.Contains("ASM") -Or $UseBuiltCompilers.Contains("ASM")) {
+    if ($ASM -eq [Compiler]::Pinned -Or $ASM -eq [Compiler]::Built) {
       $Driver = (Get-ClangDriverName $Platform -Lang "ASM")
-      if ($UseBuiltCompilers.Contains("ASM")) {
-        TryAdd-KeyValue $Defines CMAKE_ASM_COMPILER (Get-BuiltToolchainTool $Driver)
-      } else {
-        TryAdd-KeyValue $Defines CMAKE_ASM_COMPILER (Get-PinnedToolchainTool $Driver)
-      }
+      TryAdd-KeyValue $Defines CMAKE_ASM_COMPILER (Get-ToolchainTool -Compiler $ASM -Name $Driver)
       Append-FlagsDefine $Defines CMAKE_ASM_FLAGS "--target=$($Arch.LLVMTarget)"
       if ($Platform -eq "Windows") {
         TryAdd-KeyValue $Defines CMAKE_ASM_COMPILE_OPTIONS_MSVC_RUNTIME_LIBRARY_MultiThreadedDLL "/MD"
@@ -1106,21 +1118,19 @@ function Build-CMakeProject {
       }
       Append-FlagsDefine $Defines CMAKE_CXX_FLAGS $CXXFlags
     }
-    if ($UsePinnedCompilers.Contains("Swift") -Or $UseBuiltCompilers.Contains("Swift")) {
+    if ($Swift -eq [Compiler]::Pinned -Or $Swift -eq [Compiler]::Built) {
       $SwiftArgs = @()
 
       if ($UseSwiftSwiftDriver) {
         TryAdd-KeyValue $Defines CMAKE_Swift_COMPILER "$DriverToolDir\swiftc.exe"
-      } elseif ($UseBuiltCompilers.Contains("Swift")) {
-        TryAdd-KeyValue $Defines CMAKE_Swift_COMPILER (Get-BuiltToolchainTool "swiftc.exe")
       } else {
-        TryAdd-KeyValue $Defines CMAKE_Swift_COMPILER (Get-PinnedToolchainTool "swiftc.exe")
+        TryAdd-KeyValue $Defines CMAKE_Swift_COMPILER (Get-ToolchainTool -Compiler $Swift -Name "swiftc.exe")
       }
       if (-not ($Platform -eq "Windows")) {
         TryAdd-KeyValue $Defines CMAKE_Swift_COMPILER_WORKS = "YES"
       }
       TryAdd-KeyValue $Defines CMAKE_Swift_COMPILER_TARGET $Arch.LLVMTarget.Replace("$AndroidAPILevel", "")
-      if ($UseBuiltCompilers.Contains("Swift")) {
+      if ($Swift -eq [Compiler]::Built) {
         $RuntimeBinaryCache = Get-TargetProjectBinaryCache $Arch Runtime
         $SwiftResourceDir = "${RuntimeBinaryCache}\lib\swift"
 
@@ -1229,9 +1239,9 @@ function Build-CMakeProject {
       $cmakeGenerateArgs += @("-D", "$($Define.Key)=$Value")
     }
 
-    if ($UseBuiltCompilers.Contains("Swift")) {
+    if ($Swift -eq [Compiler]::Built) {
       $env:Path = "$($BuildArch.SDKInstallRoot)\usr\bin;$(Get-CMarkBinaryCache $Arch)\src;$($BuildArch.ToolchainInstallRoot)\usr\bin;${env:Path}"
-    } elseif ($UsePinnedCompilers.Contains("Swift")) {
+    } elseif ($Swift -eq [Compiler]::Pinned) {
       $env:Path = "$(Get-PinnedToolchainRuntime);${env:Path}"
     }
     Invoke-Program cmake.exe @cmakeGenerateArgs
