@@ -893,16 +893,16 @@ enum Platform {
 
 enum Compiler {
   Unspecified = 0
-  UseMSVC = 1
-  UsePinned
-  UseBuilt
-  UseNDK
+  MSVC = 1
+  Pinned
+  Built
+  NDK
 }
 
 function Get-ToolchainTool([Compiler] $Compiler, [string] $Name) {
   switch ($Compiler) {
-    UsePinned { return Get-PinnedToolchainTool $Name }
-    UseBuilt { return Get-BuiltToolchainTool $Name }
+    Pinned { return Get-PinnedToolchainTool $Name }
+    Built { return Get-BuiltToolchainTool $Name }
     UseNDK { return "$(Get-AndroidNDKPath)\toolchains\llvm\prebuilt\windows-x86_64\bin\$Name" }
   }
 }
@@ -931,18 +931,18 @@ function Build-CMakeProject {
   $C = [Compiler]::Unspecified
   $CXX = [Compiler]::Unspecified
   if ($UseMSVCCompilers.Contains("C")) {
-    $C = [Compiler]::UseMSVC
+    $C = [Compiler]::MSVC
   } elseif ($UsePinnedCompilers.Contains("C")) {
-    $C = [Compiler]::UsePinned
+    $C = [Compiler]::Pinned
   } elseif ($UseBuiltCompilers.Contains("C")) {
-    $C = [Compiler]::UseBuilt
+    $C = [Compiler]::Built
   }
   if ($UseMSVCCompilers.Contains("CXX")) {
-    $CXX = [Compiler]::UseMSVC
+    $CXX = [Compiler]::MSVC
   } elseif ($UsePinnedCompilers.Contains("CXX")) {
-    $CXX = [Compiler]::UsePinned
+    $CXX = [Compiler]::Pinned
   } elseif ($UseBuiltCompilers.Contains("CXX")) {
-    $CXX = [Compiler]::UseBuilt
+    $CXX = [Compiler]::Built
   }
 
   if ($ToBatch) {
@@ -1002,8 +1002,8 @@ function Build-CMakeProject {
       } else {
         throw "Missing CMake and Ninja in the visual studio installation that are needed to build Android"
       }
-      TryAdd-KeyValue $Defines CMAKE_C_COMPILER (Get-ToolchainTool "UseNDK" "clang.exe")
-      TryAdd-KeyValue $Defines CMAKE_CXX_COMPILER (Get-ToolchainTool "UseNDK" "clang++.exe")
+      TryAdd-KeyValue $Defines CMAKE_C_COMPILER (Get-ToolchainTool NDK "clang.exe")
+      TryAdd-KeyValue $Defines CMAKE_CXX_COMPILER (Get-ToolchainTool NDK "clang++.exe")
       TryAdd-KeyValue $Defines CMAKE_ANDROID_API "$AndroidAPILevel"
       TryAdd-KeyValue $Defines CMAKE_ANDROID_ARCH_ABI $Arch.AndroidArchABI
       TryAdd-KeyValue $Defines CMAKE_ANDROID_NDK "$androidNDKPath"
@@ -1050,14 +1050,14 @@ function Build-CMakeProject {
       }
     }
 
-    if ($C -eq "UseMSVC") {
+    if ($C -eq [Compiler]::MSVC) {
       TryAdd-KeyValue $Defines CMAKE_C_COMPILER cl
       if ($EnableCaching) {
         TryAdd-KeyValue $Defines CMAKE_C_COMPILER_LAUNCHER sccache
       }
       Append-FlagsDefine $Defines CMAKE_C_FLAGS $CFlags
     }
-    if ($CXX -eq "UseMSVC") {
+    if ($CXX -eq [Compiler]::MSVC) {
       TryAdd-KeyValue $Defines CMAKE_CXX_COMPILER cl
       if ($EnableCaching) {
         TryAdd-KeyValue $Defines CMAKE_CXX_COMPILER_LAUNCHER sccache
@@ -1076,7 +1076,7 @@ function Build-CMakeProject {
         TryAdd-KeyValue $Defines CMAKE_ASM_COMPILE_OPTIONS_MSVC_RUNTIME_LIBRARY_MultiThreadedDLL "/MD"
       }
     }
-    if ($C -eq "UsePinned" -Or $C -eq "UseBuilt") {
+    if ($C -eq [Compiler]::Pinned -Or $C -eq [Compiler]::Built) {
       $Driver = (Get-ClangDriverName $Platform -Lang "C")
       TryAdd-KeyValue $Defines CMAKE_C_COMPILER (Get-ToolchainTool -Compiler $C -Name $Driver)
       TryAdd-KeyValue $Defines CMAKE_C_COMPILER_TARGET $Arch.LLVMTarget
@@ -1091,7 +1091,7 @@ function Build-CMakeProject {
       }
       Append-FlagsDefine $Defines CMAKE_C_FLAGS $CFlags
     }
-    if ($CXX -eq "UsePinned" -Or $CXX -eq "UseBuilt") {
+    if ($CXX -eq [Compiler]::Pinned -Or $CXX -eq [Compiler]::Built) {
       $Driver = (Get-ClangDriverName $Platform -Lang "CXX")
       TryAdd-KeyValue $Defines CMAKE_C_COMPILER (Get-ToolchainTool -Compiler $CXX -Name $Driver)
       TryAdd-KeyValue $Defines CMAKE_CXX_COMPILER_TARGET $Arch.LLVMTarget
