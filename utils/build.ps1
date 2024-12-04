@@ -1047,7 +1047,7 @@ function Build-CMakeProject {
       }
       Append-FlagsDefine $Defines CMAKE_CXX_FLAGS $CXXFlags
     }
-    if ($UseASMCompiler -eq [Compiler]::Pinned -Or $UseASMCompiler -eq [Compiler]::Built) {
+    if ($UseASMCompiler -in @([Compiler]::Pinned, [Compiler]::Built)) {
       $Driver = (Get-ClangDriverName $Platform -Lang "ASM")
       TryAdd-KeyValue $Defines CMAKE_ASM_COMPILER (Get-ToolchainTool -Compiler $UseASMCompiler -Name $Driver)
       Append-FlagsDefine $Defines CMAKE_ASM_FLAGS "--target=$($Arch.LLVMTarget)"
@@ -1055,7 +1055,7 @@ function Build-CMakeProject {
         TryAdd-KeyValue $Defines CMAKE_ASM_COMPILE_OPTIONS_MSVC_RUNTIME_LIBRARY_MultiThreadedDLL "/MD"
       }
     }
-    if ($UseCCompiler -eq [Compiler]::Pinned -Or $UseCCompiler -eq [Compiler]::Built) {
+    if ($UseCCompiler -in @([Compiler]::Pinned, [Compiler]::Built)) {
       $Driver = (Get-ClangDriverName $Platform -Lang "C")
       TryAdd-KeyValue $Defines CMAKE_C_COMPILER (Get-ToolchainTool -Compiler $UseCCompiler -Name $Driver)
       TryAdd-KeyValue $Defines CMAKE_C_COMPILER_TARGET $Arch.LLVMTarget
@@ -1070,7 +1070,7 @@ function Build-CMakeProject {
       }
       Append-FlagsDefine $Defines CMAKE_C_FLAGS $CFlags
     }
-    if ($UseCXXCompiler -eq [Compiler]::Pinned -Or $UseCXXCompiler -eq [Compiler]::Built) {
+    if ($UseCXXCompiler -in @([Compiler]::Pinned, [Compiler]::Built)) {
       $Driver = (Get-ClangDriverName $Platform -Lang "CXX")
       TryAdd-KeyValue $Defines CMAKE_C_COMPILER (Get-ToolchainTool -Compiler $UseCXXCompiler -Name $Driver)
       TryAdd-KeyValue $Defines CMAKE_CXX_COMPILER_TARGET $Arch.LLVMTarget
@@ -1085,7 +1085,7 @@ function Build-CMakeProject {
       }
       Append-FlagsDefine $Defines CMAKE_CXX_FLAGS $CXXFlags
     }
-    if ($UseSwiftCompiler -eq [Compiler]::Pinned -Or $UseSwiftCompiler -eq [Compiler]::Built) {
+    if ($UseSwiftCompiler -in @([Compiler]::Pinned, [Compiler]::Built)) {
       $SwiftArgs = @()
 
       if ($UseSwiftSwiftDriver) {
