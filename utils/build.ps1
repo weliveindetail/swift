@@ -917,49 +917,16 @@ function Build-CMakeProject {
     [hashtable] $Arch,
     [string] $Generator = "Ninja",
     [string] $CacheScript = "",
-    [string[]] $UseMSVCCompilers = @(), # C,CXX
-    [string[]] $UseBuiltCompilers = @(), # ASM,C,CXX,Swift
-    [string[]] $UsePinnedCompilers = @(), # ASM,C,CXX,Swift
+    [Compiler] $UseCCompiler = [Compiler]::Unspecified,
+    [Compiler] $UseCXXCompiler = [Compiler]::Unspecified,
+    [Compiler] $UseASMCompiler = [Compiler]::Unspecified,
+    [Compiler] $UseSwiftCompiler = [Compiler]::Unspecified,
     [switch] $UseSwiftSwiftDriver = $false,
     [switch] $AddAndroidCMakeEnv = $false,
     [string] $SwiftSDK = "",
     [hashtable] $Defines = @{}, # Values are either single strings or arrays of flags
     [string[]] $BuildTargets = @()
   )
-
-  # TODO: Switch params and callsites to this notation
-  $C = [Compiler]::Unspecified
-  $CXX = [Compiler]::Unspecified
-  $ASM = [Compiler]::Unspecified
-  $Swift = [Compiler]::Unspecified
-  if ($UseMSVCCompilers.Contains("C")) {
-    $C = [Compiler]::MSVC
-  } elseif ($UsePinnedCompilers.Contains("C")) {
-    $C = [Compiler]::Pinned
-  } elseif ($UseBuiltCompilers.Contains("C")) {
-    $C = [Compiler]::Built
-  }
-  if ($UseMSVCCompilers.Contains("CXX")) {
-    $CXX = [Compiler]::MSVC
-  } elseif ($UsePinnedCompilers.Contains("CXX")) {
-    $CXX = [Compiler]::Pinned
-  } elseif ($UseBuiltCompilers.Contains("CXX")) {
-    $CXX = [Compiler]::Built
-  }
-  if ($UseMSVCCompilers.Contains("ASM")) {
-    $ASM = [Compiler]::MSVC
-  } elseif ($UsePinnedCompilers.Contains("ASM")) {
-    $ASM = [Compiler]::Pinned
-  } elseif ($UseBuiltCompilers.Contains("ASM")) {
-    $ASM = [Compiler]::Built
-  }
-  if ($UseMSVCCompilers.Contains("Swift")) {
-    $Swift = [Compiler]::MSVC
-  } elseif ($UsePinnedCompilers.Contains("Swift")) {
-    $Swift = [Compiler]::Pinned
-  } elseif ($UseBuiltCompilers.Contains("Swift")) {
-    $Swift = [Compiler]::Built
-  }
 
   if ($ToBatch) {
     Write-Output ""
@@ -1049,7 +1016,7 @@ function Build-CMakeProject {
       $CXXFlags += $CFlags.Clone() + @("/Zc:__cplusplus")
     }
 
-    if ($C -Or $CXX) {
+    if ($UseCCompiler -Or $UseCXXCompiler) {
       if ($DebugInfo -and $Platform -eq "Windows") {
         Append-FlagsDefine $Defines CMAKE_MSVC_DEBUG_INFORMATION_FORMAT Embedded
         Append-FlagsDefine $Defines CMAKE_POLICY_CMP0141 NEW
@@ -1066,31 +1033,31 @@ function Build-CMakeProject {
       }
     }
 
-    if ($C -eq [Compiler]::MSVC) {
+    if ($UseCCompiler -eq [Compiler]::MSVC) {
       TryAdd-KeyValue $Defines CMAKE_C_COMPILER cl
       if ($EnableCaching) {
         TryAdd-KeyValue $Defines CMAKE_C_COMPILER_LAUNCHER sccache
       }
       Append-FlagsDefine $Defines CMAKE_C_FLAGS $CFlags
     }
-    if ($CXX -eq [Compiler]::MSVC) {
+    if ($UseCXXCompiler -eq [Compiler]::MSVC) {
       TryAdd-KeyValue $Defines CMAKE_CXX_COMPILER cl
       if ($EnableCaching) {
         TryAdd-KeyValue $Defines CMAKE_CXX_COMPILER_LAUNCHER sccache
       }
       Append-FlagsDefine $Defines CMAKE_CXX_FLAGS $CXXFlags
     }
-    if ($ASM -eq [Compiler]::Pinned -Or $ASM -eq [Compiler]::Built) {
+    if ($UseASMCompiler -eq [Compiler]::Pinned -Or $UseASMCompiler -eq [Compiler]::Built) {
       $Driver = (Get-ClangDriverName $Platform -Lang "ASM")
-      TryAdd-KeyValue $Defines CMAKE_ASM_COMPILER (Get-ToolchainTool -Compiler $ASM -Name $Driver)
+      TryAdd-KeyValue $Defines CMAKE_ASM_COMPILER (Get-ToolchainTool -Compiler $UseASMCompiler -Name $Driver)
       Append-FlagsDefine $Defines CMAKE_ASM_FLAGS "--target=$($Arch.LLVMTarget)"
       if ($Platform -eq "Windows") {
         TryAdd-KeyValue $Defines CMAKE_ASM_COMPILE_OPTIONS_MSVC_RUNTIME_LIBRARY_MultiThreadedDLL "/MD"
       }
     }
-    if ($C -eq [Compiler]::Pinned -Or $C -eq [Compiler]::Built) {
+    if ($UseCCompiler -eq [Compiler]::Pinned -Or $UseCCompiler -eq [Compiler]::Built) {
       $Driver = (Get-ClangDriverName $Platform -Lang "C")
-      TryAdd-KeyValue $Defines CMAKE_C_COMPILER (Get-ToolchainTool -Compiler $C -Name $Driver)
+      TryAdd-KeyValue $Defines CMAKE_C_COMPILER (Get-ToolchainTool -Compiler $UseCCompiler -Name $Driver)
       TryAdd-KeyValue $Defines CMAKE_C_COMPILER_TARGET $Arch.LLVMTarget
 
       if (-not (Test-CMakeAtLeast -Major 3 -Minor 26 -Patch 3) -and $Platform -eq "Windows") {
@@ -1103,9 +1070,9 @@ function Build-CMakeProject {
       }
       Append-FlagsDefine $Defines CMAKE_C_FLAGS $CFlags
     }
-    if ($CXX -eq [Compiler]::Pinned -Or $CXX -eq [Compiler]::Built) {
+    if ($UseCXXCompiler -eq [Compiler]::Pinned -Or $UseCXXCompiler -eq [Compiler]::Built) {
       $Driver = (Get-ClangDriverName $Platform -Lang "CXX")
-      TryAdd-KeyValue $Defines CMAKE_C_COMPILER (Get-ToolchainTool -Compiler $CXX -Name $Driver)
+      TryAdd-KeyValue $Defines CMAKE_C_COMPILER (Get-ToolchainTool -Compiler $UseCXXCompiler -Name $Driver)
       TryAdd-KeyValue $Defines CMAKE_CXX_COMPILER_TARGET $Arch.LLVMTarget
 
       if (-not (Test-CMakeAtLeast -Major 3 -Minor 26 -Patch 3) -and $Platform -eq "Windows") {
@@ -1118,19 +1085,19 @@ function Build-CMakeProject {
       }
       Append-FlagsDefine $Defines CMAKE_CXX_FLAGS $CXXFlags
     }
-    if ($Swift -eq [Compiler]::Pinned -Or $Swift -eq [Compiler]::Built) {
+    if ($UseSwiftCompiler -eq [Compiler]::Pinned -Or $UseSwiftCompiler -eq [Compiler]::Built) {
       $SwiftArgs = @()
 
       if ($UseSwiftSwiftDriver) {
         TryAdd-KeyValue $Defines CMAKE_Swift_COMPILER "$DriverToolDir\swiftc.exe"
       } else {
-        TryAdd-KeyValue $Defines CMAKE_Swift_COMPILER (Get-ToolchainTool -Compiler $Swift -Name "swiftc.exe")
+        TryAdd-KeyValue $Defines CMAKE_Swift_COMPILER (Get-ToolchainTool -Compiler $UseSwiftCompiler -Name "swiftc.exe")
       }
       if (-not ($Platform -eq "Windows")) {
         TryAdd-KeyValue $Defines CMAKE_Swift_COMPILER_WORKS = "YES"
       }
       TryAdd-KeyValue $Defines CMAKE_Swift_COMPILER_TARGET $Arch.LLVMTarget.Replace("$AndroidAPILevel", "")
-      if ($Swift -eq [Compiler]::Built) {
+      if ($UseSwiftCompiler -eq [Compiler]::Built) {
         $RuntimeBinaryCache = Get-TargetProjectBinaryCache $Arch Runtime
         $SwiftResourceDir = "${RuntimeBinaryCache}\lib\swift"
 
@@ -1239,9 +1206,9 @@ function Build-CMakeProject {
       $cmakeGenerateArgs += @("-D", "$($Define.Key)=$Value")
     }
 
-    if ($Swift -eq [Compiler]::Built) {
+    if ($UseSwiftCompiler -eq [Compiler]::Built) {
       $env:Path = "$($BuildArch.SDKInstallRoot)\usr\bin;$(Get-CMarkBinaryCache $Arch)\src;$($BuildArch.ToolchainInstallRoot)\usr\bin;${env:Path}"
-    } elseif ($Swift -eq [Compiler]::Pinned) {
+    } elseif ($UseSwiftCompiler -eq [Compiler]::Pinned) {
       $env:Path = "$(Get-PinnedToolchainRuntime);${env:Path}"
     }
     Invoke-Program cmake.exe @cmakeGenerateArgs
@@ -1435,7 +1402,8 @@ function Build-BuildTools($Arch) {
     -Src $SourceCache\llvm-project\llvm `
     -Bin (Get-BuildProjectBinaryCache BuildTools) `
     -Arch $Arch `
-    -UseMSVCCompilers C,CXX `
+    -UseCCompiler MSVC `
+    -UseCXXCompiler MSVC `
     -BuildTargets llvm-tblgen,clang-tblgen,clang-pseudo-gen,clang-tidy-confusable-chars-gen,lldb-tblgen,llvm-config,swift-def-to-strings-converter,swift-serialize-diagnostics,swift-compatibility-symbols `
     -Defines @{
       CMAKE_CROSSCOMPILING = "NO";
@@ -1522,8 +1490,9 @@ function Build-Compilers() {
       -InstallTo "$($Arch.ToolchainInstallRoot)\usr" `
       -Arch $Arch `
       -AddAndroidCMakeEnv:$Android `
-      -UseMSVCCompilers C,CXX `
-      -UsePinnedCompilers Swift `
+      -UseCCompiler MSVC `
+      -UseCXXCompiler MSVC `
+      -UseSwiftCompiler Pinned `
       -BuildTargets $Targets `
       -CacheScript $SourceCache\swift\cmake\caches\Windows-$($Arch.LLVMName).cmake `
       -Defines ($TestingDefines + @{
@@ -1622,7 +1591,8 @@ function Build-LLVM([Platform]$Platform, $Arch) {
     -Bin (Get-TargetProjectBinaryCache $Arch LLVM) `
     -Arch $Arch `
     -Platform $Platform `
-    -UseMSVCCompilers C,CXX `
+    -UseCCompiler MSVC `
+    -UseCXXCompiler MSVC `
     -Defines @{
       CMAKE_SYSTEM_NAME = $Platform.ToString();
       LLVM_HOST_TRIPLE = $Arch.LLVMTarget;
@@ -1638,7 +1608,7 @@ function Build-ZLib([Platform]$Platform, $Arch) {
     -InstallTo $LibraryRoot\zlib-1.3.1\usr `
     -Arch $Arch `
     -Platform $Platform `
-    -UseMSVCCompilers C `
+    -UseCCompiler MSVC `
     -Defines @{
       BUILD_SHARED_LIBS = "NO";
       CMAKE_POSITION_INDEPENDENT_CODE = "YES";
@@ -1657,7 +1627,8 @@ function Build-XML2([Platform]$Platform, $Arch) {
     -InstallTo "$LibraryRoot\libxml2-2.11.5\usr" `
     -Arch $Arch `
     -Platform $Platform `
-    -UseMSVCCompilers C,CXX `
+    -UseCCompiler MSVC `
+    -UseCXXCompiler MSVC ``
     -Defines @{
       BUILD_SHARED_LIBS = "NO";
       CMAKE_INSTALL_BINDIR = "bin/$Platform/$ArchName";
@@ -1682,7 +1653,8 @@ function Build-RegsGen2($Arch) {
     -Bin "$(Get-BuildProjectBinaryCache RegsGen2)" `
     -Arch $Arch `
     -BuildTargets default `
-    -UseMSVCCompilers C,CXX `
+    -UseCCompiler MSVC `
+    -UseCXXCompiler MSVC `
     -Defines @{
       BISON_EXECUTABLE = "$(Get-BisonExecutable)";
       FLEX_EXECUTABLE = "$(Get-FlexExecutable)";
@@ -1723,7 +1695,7 @@ function Build-CURL([Platform]$Platform, $Arch) {
     -InstallTo "$LibraryRoot\curl-8.9.1\usr" `
     -Arch $Arch `
     -Platform $Platform `
-    -UseMSVCCompilers C `
+    -UseCCompiler MSVC `
     -Defines ($PlatformDefines + @{
       BUILD_SHARED_LIBS = "NO";
       BUILD_TESTING = "NO";
@@ -1839,7 +1811,9 @@ function Build-Runtime([Platform]$Platform, $Arch) {
       -Arch $Arch `
       -Platform $Platform `
       -CacheScript $SourceCache\swift\cmake\caches\Runtime-$Platform-$($Arch.LLVMName).cmake `
-      -UseBuiltCompilers C,CXX,Swift `
+      -UseCCompiler Built `
+      -UseCXXCompiler Built `
+      -UseSwiftCompiler Built `
       -Defines ($PlatformDefines + @{
         CMAKE_Swift_COMPILER_TARGET = $Arch.LLVMTarget.Replace("$AndroidAPILevel", "");
         CMAKE_Swift_COMPILER_WORKS = "YES";
@@ -1880,7 +1854,9 @@ function Build-Dispatch([Platform]$Platform, $Arch, [switch]$Test = $false) {
     -InstallTo $InstallPath `
     -Arch $Arch `
     -Platform $Platform `
-    -UseBuiltCompilers C,CXX,Swift `
+    -UseCCompiler Built `
+    -UseCXXCompiler Built `
+    -UseSwiftCompiler Built `
     -Defines @{
       ENABLE_SWIFT = "YES";
     }
@@ -1941,7 +1917,10 @@ function Build-Foundation([Platform]$Platform, $Arch, [switch]$Test = $false) {
         -InstallTo "$($Arch.SDKInstallRoot)\usr" `
         -Arch $Arch `
         -Platform $Platform `
-        -UseBuiltCompilers ASM,C,CXX,Swift `
+        -UseASMCompiler Built `
+        -UseCCompiler Built `
+        -UseCXXCompiler Built `
+        -UseSwiftCompiler Built `
         -SwiftSDK:$SDKRoot `
         -Defines (@{
           ENABLE_TESTING = "NO";
@@ -2012,7 +1991,7 @@ function Build-FoundationMacros() {
     -InstallTo:$InstallDir `
     -Arch $Arch `
     -Platform $Platform `
-    -UseBuiltCompilers Swift `
+    -UseSwiftCompiler Built `
     -SwiftSDK:$SwiftSDK `
     -BuildTargets:$Targets `
     -Defines @{
@@ -2049,7 +2028,7 @@ function Build-XCTest([Platform]$Platform, $Arch, [switch]$Test = $false) {
       -InstallTo $InstallPath `
       -Arch $Arch `
       -Platform $Platform `
-      -UseBuiltCompilers Swift `
+      -UseSwiftCompiler Built `
       -BuildTargets $Targets `
       -Defines (@{
         CMAKE_BUILD_WITH_INSTALL_RPATH = "YES";
@@ -2078,7 +2057,9 @@ function Build-Testing([Platform]$Platform, $Arch, [switch]$Test = $false) {
       -InstallTo $InstallPath `
       -Arch $Arch `
       -Platform $Platform `
-      -UseBuiltCompilers C,CXX,Swift `
+      -UseCCompiler Built `
+      -UseCXXCompiler Built `
+      -UseSwiftCompiler Built `
       -Defines (@{
         BUILD_SHARED_LIBS = "YES";
         CMAKE_BUILD_WITH_INSTALL_RPATH = "YES";
@@ -2191,7 +2172,7 @@ function Build-SQLite($Arch) {
     -Bin "$($Arch.BinaryCache)\sqlite-3.46.0" `
     -InstallTo $LibraryRoot\sqlite-3.46.0\usr `
     -Arch $Arch `
-    -UseMSVCCompilers C `
+    -UseCCompiler MSVC `
     -Defines @{
       BUILD_SHARED_LIBS = "NO";
     }
@@ -2204,7 +2185,8 @@ function Build-System($Arch) {
     -InstallTo "$($Arch.ToolchainInstallRoot)\usr" `
     -Arch $Arch `
     -Platform Windows `
-    -UseBuiltCompilers C,Swift `
+    -UseCCompiler Built `
+    -UseSwiftCompiler Built `
     -SwiftSDK (Get-HostSwiftSDK) `
     -Defines @{
       BUILD_SHARED_LIBS = "YES";
@@ -2223,7 +2205,8 @@ function Build-ToolsSupportCore($Arch) {
     -InstallTo "$($Arch.ToolchainInstallRoot)\usr" `
     -Arch $Arch `
     -Platform Windows `
-    -UseBuiltCompilers C,Swift `
+    -UseCCompiler Built `
+    -UseSwiftCompiler Built `
     -SwiftSDK (Get-HostSwiftSDK) `
     -Defines @{
       BUILD_SHARED_LIBS = "YES";
@@ -2261,8 +2244,8 @@ function Build-LLBuild($Arch, [switch]$Test = $false) {
       -InstallTo $InstallPath `
       -Arch $Arch `
       -Platform Windows `
-      -UseMSVCCompilers CXX `
-      -UseBuiltCompilers Swift `
+      -UseCXXCompiler MSVC `
+      -UseSwiftCompiler Built `
       -SwiftSDK (Get-HostSwiftSDK) `
       -BuildTargets $Targets `
       -Defines ($TestingDefines + @{
@@ -2280,7 +2263,8 @@ function Build-Yams($Arch) {
     -Bin (Get-HostProjectBinaryCache Yams) `
     -Arch $Arch `
     -Platform Windows `
-    -UseBuiltCompilers C,Swift `
+    -UseCCompiler Built `
+    -UseSwiftCompiler Built `
     -SwiftSDK (Get-HostSwiftSDK) `
     -BuildTargets default `
     -Defines @{
@@ -2296,7 +2280,7 @@ function Build-ArgumentParser($Arch) {
     -InstallTo "$($Arch.ToolchainInstallRoot)\usr" `
     -Arch $Arch `
     -Platform Windows `
-    -UseBuiltCompilers Swift `
+    -UseSwiftCompiler Built `
     -SwiftSDK (Get-HostSwiftSDK) `
     -Defines @{
       BUILD_SHARED_LIBS = "YES";
@@ -2311,7 +2295,9 @@ function Build-Driver($Arch) {
     -InstallTo "$($Arch.ToolchainInstallRoot)\usr" `
     -Arch $Arch `
     -Platform Windows `
-    -UseBuiltCompilers C,CXX,Swift `
+    -UseCCompiler Built `
+    -UseCXXCompiler Built `
+    -UseSwiftCompiler Built `
     -SwiftSDK (Get-HostSwiftSDK) `
     -Defines @{
       BUILD_SHARED_LIBS = "YES";
@@ -2335,7 +2321,7 @@ function Build-Crypto($Arch) {
     -Bin (Get-HostProjectBinaryCache Crypto) `
     -Arch $Arch `
     -Platform Windows `
-    -UseBuiltCompilers Swift `
+    -UseSwiftCompiler Built `
     -SwiftSDK (Get-HostSwiftSDK) `
     -BuildTargets default `
     -Defines @{
@@ -2350,7 +2336,8 @@ function Build-Collections($Arch) {
     -InstallTo "$($Arch.ToolchainInstallRoot)\usr" `
     -Arch $Arch `
     -Platform Windows `
-    -UseBuiltCompilers C,Swift `
+    -UseCCompiler Built `
+    -UseSwiftCompiler Built `
     -SwiftSDK (Get-HostSwiftSDK) `
     -Defines @{
       BUILD_SHARED_LIBS = "YES";
@@ -2362,7 +2349,8 @@ function Build-ASN1($Arch) {
     -Src $SourceCache\swift-asn1 `
     -Bin (Get-HostProjectBinaryCache ASN1) `
     -Arch $Arch `
-    -UseBuiltCompilers C,Swift `
+    -UseCCompiler Built `
+    -UseSwiftCompiler Built `
     -SwiftSDK (Get-HostSwiftSDK) `
     -BuildTargets default `
     -Defines @{
@@ -2376,7 +2364,7 @@ function Build-Certificates($Arch) {
     -Bin (Get-HostProjectBinaryCache Certificates) `
     -Arch $Arch `
     -Platform Windows `
-    -UseBuiltCompilers Swift `
+    -UseSwiftCompiler Built `
     -SwiftSDK (Get-HostSwiftSDK) `
     -BuildTargets default `
     -Defines @{
@@ -2399,7 +2387,8 @@ function Build-PackageManager($Arch) {
     -InstallTo "$($Arch.ToolchainInstallRoot)\usr" `
     -Arch $Arch `
     -Platform Windows `
-    -UseBuiltCompilers C,Swift `
+    -UseCCompiler Built `
+    -UseSwiftCompiler Built `
     -SwiftSDK (Get-HostSwiftSDK) `
     -Defines @{
       BUILD_SHARED_LIBS = "YES";
@@ -2426,7 +2415,8 @@ function Build-Markdown($Arch) {
     -InstallTo "$($Arch.ToolchainInstallRoot)\usr" `
     -Arch $Arch `
     -Platform Windows `
-    -UseBuiltCompilers C,Swift `
+    -UseCCompiler Built `
+    -UseSwiftCompiler Built `
     -SwiftSDK (Get-HostSwiftSDK) `
     -Defines @{
       BUILD_SHARED_LIBS = "NO";
@@ -2442,8 +2432,8 @@ function Build-Format($Arch) {
     -InstallTo "$($Arch.ToolchainInstallRoot)\usr" `
     -Arch $Arch `
     -Platform Windows `
-    -UseMSVCCompilers C `
-    -UseBuiltCompilers Swift `
+    -UseCCompiler MSVC `
+    -UseSwiftCompiler Built `
     -SwiftSDK (Get-HostSwiftSDK) `
     -Defines @{
       BUILD_SHARED_LIBS = "YES";
@@ -2500,7 +2490,9 @@ function Build-IndexStoreDB($Arch) {
     -Bin (Get-HostProjectBinaryCache IndexStoreDB) `
     -Arch $Arch `
     -Platform Windows `
-    -UseBuiltCompilers C,CXX,Swift `
+    -UseCCompiler Built `
+    -UseCXXCompiler Built `
+    -UseSwiftCompiler Built `
     -SwiftSDK $SDKInstallRoot `
     -BuildTargets default `
     -Defines @{
@@ -2517,7 +2509,8 @@ function Build-SourceKitLSP($Arch) {
     -InstallTo "$($Arch.ToolchainInstallRoot)\usr" `
     -Arch $Arch `
     -Platform Windows `
-    -UseBuiltCompilers C,Swift `
+    -UseCCompiler Built `
+    -UseSwiftCompiler Built `
     -SwiftSDK (Get-HostSwiftSDK) `
     -Defines @{
       SwiftSyntax_DIR = (Get-HostProjectCMakeModules Compilers);
@@ -2654,7 +2647,7 @@ function Build-TestingMacros() {
     -InstallTo:$InstallDir  `
     -Arch $Arch `
     -Platform $Platform `
-    -UseBuiltCompilers Swift `
+    -UseSwiftCompiler Built `
     -SwiftSDK:$SwiftSDK `
     -BuildTargets:$Targets `
     -Defines @{
@@ -2690,7 +2683,7 @@ function Build-Inspect() {
     -Bin (Get-HostProjectBinaryCache SwiftInspect) `
     -InstallTo "$($HostArch.ToolchainInstallRoot)\usr" `
     -Arch $HostArch `
-    -UseBuiltCompilers Swift `
+    -UseSwiftCompiler Built `
     -UseSwiftSwiftDriver `
     -SwiftSDK $SDKRoot `
     -Defines @{
