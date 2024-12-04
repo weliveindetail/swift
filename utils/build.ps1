@@ -212,6 +212,10 @@ $Components = @{
     URL = "https://github.com/lexxmark/winflexbison/releases/download/v$WinFlexBisonVersion/win_flex_bison-$WinFlexBisonVersion.zip"
     Hash = "8D324B62BE33604B2C45AD1DD34AB93D722534448F55A16CA7292DE32B6AC135"
   }
+  GnuWin32Make = @{
+    URL = "https://downloads.sourceforge.net/project/ezwinports/make-4.4.1-without-guile-w32-bin.zip"
+    Hash = "fb66a02b530f7466f6222ce53c0b602c5288e601547a034e4156a512dd895ee7"
+  }
   packaging = @{
     URL = "https://files.pythonhosted.org/packages/08/aa/cc0199a5f0ad350994d660967a8efb233fe0416e4639146c089643407ce6/packaging-24.1-py3-none-any.whl"
     Hash = "5b8f2217dbdbd2f7f384c41c628544e6d52f2d0f53c6d0c3ea61aa5d1d7ff124"
@@ -221,6 +225,14 @@ $Components = @{
     # https://github.com/swiftlang/llvm-project/issues/9289
     URL = "https://files.pythonhosted.org/packages/ff/ae/f19306b5a221f6a436d8f2238d5b80925004093fa3edea59835b514d9057/setuptools-75.1.0-py3-none-any.whl"
     Hash = "35ab7fd3bcd95e6b7fd704e4a1539513edad446c097797f2985e0e4b960772f2"
+  }
+  psutil = @{
+    URL = "https://files.pythonhosted.org/packages/11/91/87fa6f060e649b1e1a7b19a4f5869709fbf750b7c8c262ee776ec32f3028/psutil-6.1.0-cp37-abi3-win_amd64.whl"
+    Hash = "a8fb3752b491d246034fa4d279ff076501588ce8cbcdbb62c32fd7a377d996be"
+  }
+  unittest2 = @{
+    URL = "https://files.pythonhosted.org/packages/72/20/7f0f433060a962200b7272b8c12ba90ef5b903e218174301d0abfd523813/unittest2-1.1.0-py2.py3-none-any.whl"
+    Hash = "13f77d0875db6d9b435e1d4f41e74ad4cc2eb6e1d5c824996092b3430f088bb8"
   }
 }
 
@@ -772,6 +784,12 @@ function Fetch-Dependencies {
 
   DownloadAndVerify $PinnedSwift "$BinaryCache\$PinnedToolchain.exe"
 
+  if ($Test -contains "lldb") {
+    # The make tool isn't part of MSYS
+    DownloadAndVerify "GnuWin32Make" "$BinaryCache\GnuWin32Make-4.4.1.zip"
+    Extract-ZipFile GnuWin32Make-4.4.1.zip $BinaryCache GnuWin32Make-4.4.1
+  }
+
   # TODO(compnerd) stamp/validate that we need to re-extract
   New-Item -ItemType Directory -ErrorAction Ignore $BinaryCache\toolchains | Out-Null
   Extract-Toolchain "$PinnedToolchain.exe" $BinaryCache $PinnedToolchain
@@ -816,6 +834,10 @@ function Fetch-Dependencies {
   # Ensure Python modules that are required as host build tools
   Ensure-PythonModule "packaging"
   Ensure-PythonModule "distutils"
+  if ($Test -contains "lldb") {
+    Ensure-PythonModule "psutil"
+    Ensure-PythonModule "unittest2"
+  }
 
   if ($Android) {
     # Only a specific NDK version is supported right now.
