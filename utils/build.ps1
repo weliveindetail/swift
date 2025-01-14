@@ -1501,7 +1501,7 @@ function Build-Compilers() {
       if ($TestClang) { $Targets += @("check-clang") }
       if ($TestLLD) { $Targets += @("check-lld") }
       if ($TestLLDB) {
-        $Targets += @("check-lldb")
+        $Targets += @("check-lldb", "check-lldb", "check-lldb", "check-lldb", "check-lldb", "check-lldb", "check-lldb", "check-lldb", "check-lldb", "check-lldb")
 
         function Select-LitTestOverrides {
           param([string] $TestStatus)
