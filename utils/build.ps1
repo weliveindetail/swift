@@ -1498,8 +1498,10 @@ function Build-Compilers() {
         SWIFT_NATIVE_SWIFT_TOOLS_PATH = "";
       }
 
+      if ($TestLLVM) { $Targets += @("check-llvm") }
       if ($TestClang) { $Targets += @("check-clang") }
       if ($TestLLD) { $Targets += @("check-lld") }
+      if ($TestSwift) { $Targets += @("check-swift", "SwiftCompilerPlugin") }
       if ($TestLLDB) {
         $Targets += @("check-lldb", "check-lldb", "check-lldb", "check-lldb", "check-lldb", "check-lldb", "check-lldb", "check-lldb", "check-lldb", "check-lldb")
 
@@ -1542,8 +1544,6 @@ function Build-Compilers() {
           LLVM_UNITTEST_LINK_FLAGS = "$($Arch.SDKInstallRoot)\usr\lib\swift\windows\$($Arch.LLVMName)\swiftCore.lib";
         }
       }
-      if ($TestLLVM) { $Targets += @("check-llvm") }
-      if ($TestSwift) { $Targets += @("check-swift", "SwiftCompilerPlugin") }
     } else {
       $Targets = @("distribution", "install-distribution")
       $TestingDefines = @{
