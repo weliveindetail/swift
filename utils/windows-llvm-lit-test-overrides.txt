@@ -26,6 +26,10 @@ skip lldb-api :: tools/lldb-server/TestGdbRemote_qThreadStopInfo.py
 # https://github.com/swiftlang/llvm-project/issues/9705
 skip lldb-api :: python_api/section/TestSectionAPI.py
 
+# Passes upstream in bot lldb-aarch64-windows; it fails in swiftlang
+# since https://github.com/swiftlang/llvm-project/pull/9493 relanded
+skip lldb-api :: functionalities/breakpoint/same_cu_name/TestFileBreakpoinsSameCUName.py
+
 # Untriaged
 skip lldb-api :: lang/BoundsSafety/array_of_ptrs/TestArrayOfBoundsSafetyPointers.py
 skip lldb-api :: lang/BoundsSafety/out_of_bounds_pointer/TestOutOfBoundsPointer.py
