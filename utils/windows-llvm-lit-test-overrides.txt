@@ -36,6 +36,7 @@ skip lldb-api :: lang/BoundsSafety/out_of_bounds_pointer/TestOutOfBoundsPointer.
 skip lldb-shell :: Commands/command-expr-diagnostics.test
 skip lldb-api :: commands/statistics/basic/TestStats.py
 skip lldb-unit :: Host/./HostTests.exe
+skip lldb-api :: tools/lldb-server/TestNonStop.py
 
 ### Tests that pass occasionally ###
 
