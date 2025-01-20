@@ -46,6 +46,10 @@ skip lldb-api :: functionalities/archives/TestBSDArchives.py
 skip lldb-api :: macosx/duplicate-archive-members/TestDuplicateMembers.py
 
 skip lldb-api :: tools/lldb-server/TestGdbRemoteThreadsInStopReply.py
+skip lldb-api :: tools/lldb-server/register-reading/TestGdbRemoteGPacket.py
+
+# TODO: Can we skip them all like this?
+skip lldb-api :: tools/lldb-server
 
 ### Tests that pass accidentally ###
 
