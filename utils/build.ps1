@@ -1626,11 +1626,10 @@ function Build-Sanitizers([Platform]$Platform, $Arch) {
     -Platform $Platform `
     -UseBuiltCompilers C,CXX `
     -BuildTargets "install-compiler-rt" `
+    -CacheScript $SourceCache\swift\cmake\caches\LLVM-$Platform-$($Arch.LLVMName).cmake `
     -Defines (@{
       CMAKE_SYSTEM_NAME = $Platform.ToString();
       LLVM_DIR = "$LLVMTargetCache\lib\cmake\llvm";
-      LLVM_ENABLE_PER_TARGET_RUNTIME_DIR = "YES";
-      COMPILER_RT_DEFAULT_TARGET_ONLY = "YES";
     })
   
   Build-CMakeProject `
@@ -1641,18 +1640,10 @@ function Build-Sanitizers([Platform]$Platform, $Arch) {
     -Platform $Platform `
     -UseBuiltCompilers C,CXX `
     -BuildTargets "install-compiler-rt" `
+    -CacheScript $SourceCache\swift\cmake\caches\LLVM-$Platform-$($Arch.LLVMName).cmake `
     -Defines (@{
       CMAKE_SYSTEM_NAME = $Platform.ToString();
       LLVM_DIR = "$LLVMTargetCache\lib\cmake\llvm";
-      LLVM_ENABLE_PER_TARGET_RUNTIME_DIR = "YES";
-      COMPILER_RT_DEFAULT_TARGET_ONLY = "YES";
-      COMPILER_RT_BUILD_BUILTINS = "NO";
-      COMPILER_RT_BUILD_CRT = "NO";
-      COMPILER_RT_BUILD_LIBFUZZER = "NO";
-      COMPILER_RT_BUILD_ORC = "NO";
-      COMPILER_RT_BUILD_XRAY = "NO";
-      COMPILER_RT_BUILD_PROFILE = "YES";
-      COMPILER_RT_BUILD_SANITIZERS = "YES";
     })
 }
 
