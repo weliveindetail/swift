@@ -211,7 +211,7 @@ if ($AndroidSDKs.Length -gt 0) {
 
 if ($Test -contains "*") {
   # Explicitly don't include llbuild yet since tests are known to fail on Windows
-  $Test = @("lld", "lldb", "swift", "dispatch", "foundation", "xctest", "swift-format", "sourcekit-lsp")
+  $Test = @("lld", "lldb", "swift", "dispatch", "foundation", "xctest", "swift-format", "sourcekit-lsp", "android")
 }
 
 # Architecture definitions
@@ -908,16 +908,12 @@ function Fetch-Dependencies {
         # Let cmdline-tools install itself. This is idiomatic for installing the Android SDK.
         Invoke-Program "$BinaryCache\android-sdk-cmdline-tools\cmdline-tools\bin\sdkmanager.bat" -OutNull "--sdk_root=$SDKDir" '"cmdline-tools;latest"' '--channel=3'
         $AndroidSdkMgr = "$SDKDir\cmdline-tools\latest\bin\sdkmanager.bat"
+
+        # TODO: Install all platforms that we want to test on.
         foreach ($Package in @('"system-images;android-29;default;x86_64"', '"platforms;android-29"', '"platform-tools"')) {
           Write-Host "$AndroidSdkMgr $Package"
           Invoke-Program -OutNull $AndroidSdkMgr $Package
         }
-
-        # There is no way to disable interactive mode in avdmanager
-        "no" | & "$SDKDir\cmdline-tools\latest\bin\avdmanager.bat" create avd --force --name '"swift-test-device"' --package '"system-images;android-29;default;x86_64"'
-
-        # Dump virtual devices to confirm that swift-test-device exists
-        Invoke-Program "$SDKDir\cmdline-tools\latest\bin\avdmanager.bat" list avd
       }
     }
   }
@@ -968,6 +964,73 @@ function Fetch-Dependencies {
       Checkout = 'Fetch-Dependencies'
       "Elapsed Time" = $Stopwatch.Elapsed.ToString()
     })
+  }
+}
+
+$AndroidEmulatorPid = $null
+$AndroidEmulatorArchName = $null
+
+function AndroidEmulator-CreateDevice($ArchName) {
+  $DeviceName = "swift-test-device-$ArchName"
+  $Packages = "system-images;android-29;default;$ArchName"
+  $AvdTool = "$BinaryCache\android-sdk\cmdline-tools\latest\bin\avdmanager.bat"
+  Isolate-EnvVars {
+    $env:JAVA_HOME = "$BinaryCache\android-sdk-jdk\jdk-17.0.14+7"
+    $env:Path = "${env:JAVA_HOME}\bin;${env:Path}"
+    $Output = & $AvdTool list avd
+    if ($Output -match $DeviceName) {
+      Write-Host "Found Android virtual device for arch $ArchName"
+    } else {
+      Write-Host "Create Android virtual device for arch $ArchName"
+      "no" | & $AvdTool create avd --force --name $DeviceName --package $Packages
+    }
+  }
+  #return $DeviceName
+  return "swift-test-device"
+}
+
+function AndroidEmulator-Run($ArchName) {
+  if ($AndroidEmulatorArchName -ne $ArchName) {
+    AndroidEmulator-TearDown
+  }
+  if ($AndroidEmulatorPid -eq $null) {
+    Write-Host "Start Android emulator for arch $ArchName"
+    $Device = (AndroidEmulator-CreateDevice $ArchName)
+    $EmuTool = "$BinaryCache\android-sdk\emulator\emulator.exe"
+    Isolate-EnvVars {
+      $env:JAVA_HOME = "$BinaryCache\android-sdk-jdk\jdk-17.0.14+7"
+      $env:Path = "${env:JAVA_HOME}\bin;${env:Path}"
+      $Process = Start-Process -PassThru $EmuTool "@$Device" `
+                -RedirectStandardOutput "$BinaryCache\android-sdk\.temp\emulator.out" `
+                -RedirectStandardError "$BinaryCache\android-sdk\.temp\emulator.err"
+      $global:AndroidEmulatorPid = $Process.Id
+      $global:AndroidEmulatorArchName = $ArchName
+      Write-Host "Waiting while Android emulator boots in process $AndroidEmulatorPid"
+      $adb = "$BinaryCache\android-sdk\platform-tools\adb.exe"
+      Invoke-Program $adb "wait-for-device"
+    }
+  }
+}
+
+function AndroidEmulator-TearDown() {
+  if ($AndroidEmulatorPid -ne $null) {
+    if (Get-Process -Id $AndroidEmulatorPid -ErrorAction SilentlyContinue) {
+      Write-Host "Tear down Android emulator for arch $AndroidEmulatorArchName"
+      $adb = "$BinaryCache\android-sdk\platform-tools\adb.exe"
+      & $adb emu kill | Out-Null
+      & $adb kill-server | Out-Null
+
+      try {
+        Write-Host "Waiting for process $AndroidEmulatorPid to exit"
+        Wait-Process -Id $AndroidEmulatorPid -Timeout 1
+      } catch {
+        Write-Host "Process $AndroidEmulatorPid failed to exit. Shutting it down."
+        Stop-Process -Force -Id $AndroidEmulatorPid
+      }
+
+      $global:AndroidEmulatorPid = $null
+      $global:AndroidEmulatorArchName = $null
+    }
   }
 }
 
@@ -2047,17 +2110,29 @@ function Build-CURL([Platform]$Platform, $Arch) {
     })
 }
 
-function Build-Runtime([Platform]$Platform, $Arch) {
+function Build-Runtime([Platform]$Platform, $Arch, [switch]$Test = $false) {
   $PlatformDefines = @{}
   if ($Platform -eq "Android") {
     $PlatformDefines += @{
       LLVM_ENABLE_LIBCXX = "YES";
       SWIFT_USE_LINKER = "lld";
-      SWIFT_INCLUDE_TESTS = "NO";
-      SWIFT_INCLUDE_TEST_BINARIES = "NO";
     }
   }
 
+  if ($Test -and $Platform -eq "Android") {
+    $Targets = @("upload-stdlib-android-x86_64", "check-swift-android-x86_64", "install")
+    AndroidEmulator-Run $Arch.LLVMName
+    $PlatformDefines += @{
+      SWIFT_INCLUDE_TESTS = "YES";
+      SWIFT_BUILD_SDK_OVERLAY = "YES";
+      SWIFT_BUILD_STDLIB = "YES";
+      SWIFT_BUILD_TEST_SUPPORT_MODULES = "YES";
+      SWIFT_ANDROID_DEPLOY_DEVICE_PATH = "/data/local/tmp"
+      SWIFT_LIT_ARGS = "--filter=validation-test"
+    }
+  } else {
+    $Targets = @("install")
+  }
 
   Isolate-EnvVars {
     $env:Path = "$(Get-CMarkBinaryCache $Arch)\src;$(Get-PinnedToolchainRuntime);${env:Path}"
@@ -2076,6 +2151,7 @@ function Build-Runtime([Platform]$Platform, $Arch) {
       -Platform $Platform `
       -CacheScript $SourceCache\swift\cmake\caches\Runtime-$Platform-$($Arch.LLVMName).cmake `
       -UseBuiltCompilers C,CXX,Swift `
+      -BuildTargets $Targets `
       -Defines ($PlatformDefines + @{
         CMAKE_Swift_COMPILER_TARGET = (Get-ModuleTriple $Arch);
         CMAKE_Swift_COMPILER_WORKS = "YES";
@@ -3139,6 +3215,7 @@ if (-not $SkipBuild) {
     Invoke-BuildStep Write-PlatformInfoPlist $Arch
   }
 
+  $TestAndroid = $Test -contains "android"
   foreach ($Arch in $AndroidSDKArchs) {
     if ($IncludeDS2) {
       Invoke-BuildStep Build-DS2 Android $Arch
@@ -3149,7 +3226,7 @@ if (-not $SkipBuild) {
     Invoke-BuildStep Build-LLVM Android $Arch
 
     # Build platform: SDK, Redist and XCTest
-    Invoke-BuildStep Build-Runtime Android $Arch
+    Invoke-BuildStep Build-Runtime Android $Arch -Test:$TestAndroid
     Invoke-BuildStep Build-Dispatch Android $Arch
     Invoke-BuildStep Build-Foundation Android $Arch
     Invoke-BuildStep Build-Sanitizers Android $Arch
@@ -3283,11 +3360,7 @@ if (-not $IsCrossCompiling) {
 
   exit 1
 } finally {
-  $adb = "$BinaryCache\android-sdk\platform-tools\adb.exe"
-  if (Test-Path $adb) {
-    & $adb emu kill | Out-Null
-    & $adb kill-server | Out-Null
-  }
+  AndroidEmulator-TearDown
 
   if ($Summary) {
     $TimingData | Select-Object Platform,Arch,Checkout,"Elapsed Time" | Sort-Object -Descending -Property "Elapsed Time" | Format-Table -AutoSize
