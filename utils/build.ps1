@@ -974,19 +974,15 @@ function AndroidEmulator-CreateDevice($ArchName) {
   $DeviceName = "swift-test-device-$ArchName"
   $Packages = "system-images;android-29;default;$ArchName"
   $AvdTool = "$BinaryCache\android-sdk\cmdline-tools\latest\bin\avdmanager.bat"
-  Isolate-EnvVars {
-    $env:JAVA_HOME = "$BinaryCache\android-sdk-jdk\jdk-17.0.14+7"
-    $env:Path = "${env:JAVA_HOME}\bin;${env:Path}"
-    $Output = & $AvdTool list avd
-    if ($Output -match $DeviceName) {
-      Write-Host "Found Android virtual device for arch $ArchName"
-    } else {
-      Write-Host "Create Android virtual device for arch $ArchName"
-      "no" | & $AvdTool create avd --force --name $DeviceName --package $Packages
-    }
+
+  $Output = & $AvdTool list avd
+  if ($Output -match $DeviceName) {
+    Write-Host "Found Android virtual device for arch $ArchName"
+  } else {
+    Write-Host "Create Android virtual device for arch $ArchName"
+    "no" | & $AvdTool create avd --force --name $DeviceName --package $Packages
   }
-  #return $DeviceName
-  return "swift-test-device"
+  return $DeviceName
 }
 
 function AndroidEmulator-Run($ArchName) {
@@ -994,20 +990,52 @@ function AndroidEmulator-Run($ArchName) {
     AndroidEmulator-TearDown
   }
   if ($AndroidEmulatorPid -eq $null) {
-    Write-Host "Start Android emulator for arch $ArchName"
-    $Device = (AndroidEmulator-CreateDevice $ArchName)
-    $EmuTool = "$BinaryCache\android-sdk\emulator\emulator.exe"
     Isolate-EnvVars {
+      $env:ANDROID_SDK_HOME = "$BinaryCache\android-sdk"
       $env:JAVA_HOME = "$BinaryCache\android-sdk-jdk\jdk-17.0.14+7"
       $env:Path = "${env:JAVA_HOME}\bin;${env:Path}"
-      $Process = Start-Process -PassThru $EmuTool "@$Device" `
-                -RedirectStandardOutput "$BinaryCache\android-sdk\.temp\emulator.out" `
-                -RedirectStandardError "$BinaryCache\android-sdk\.temp\emulator.err"
+
+      Write-Host "ANDROID_SDK_HOME = $env:ANDROID_SDK_HOME"
+      $AvdTool = "$BinaryCache\android-sdk\cmdline-tools\latest\bin\avdmanager.bat"
+      Write-Host "$AvdTool list avd reports:"
+      Invoke-Program $AvdTool list avd
+
+      $Device = (AndroidEmulator-CreateDevice $ArchName)
+
+      Write-Host "$AvdTool list avd reports:"
+      Invoke-Program $AvdTool list avd
+
+      $EmuTool = "$BinaryCache\android-sdk\emulator\emulator.exe"
+      Write-Host "$EmuTool -list-avds reports:"
+      Invoke-Program $EmuTool -list-avds
+
+      Write-Host "Start Android emulator for arch $ArchName"
+      foreach($Attempt in 1..5) {
+        $Process = Start-Process -PassThru $EmuTool "@$Device"
+        #@("-avd", "$Device")
+        try {
+          Write-Host "Waiting for process $($Process.Id) to start"
+          Start-Sleep -Seconds 1
+          $_ = Get-Process -Id $Process.Id
+          break
+        } catch {
+          if ($Attempt -lt 5) {
+            Write-Host "Process $($Process.Id) failed to start, trying again..."
+            Start-Sleep -Seconds 3
+          } else {
+            throw "Android emulator process $($Process.Id) failed to start."
+          }
+        }
+      }
+
       $global:AndroidEmulatorPid = $Process.Id
       $global:AndroidEmulatorArchName = $ArchName
+
       Write-Host "Waiting while Android emulator boots in process $AndroidEmulatorPid"
       $adb = "$BinaryCache\android-sdk\platform-tools\adb.exe"
       Invoke-Program $adb "wait-for-device"
+
+      Write-Host "SUCCESS: Emulator ready"
     }
   }
 }
@@ -3158,7 +3186,8 @@ try {
 
 Fetch-Dependencies
 
-Test-Dispatch Android $AndroidX64
+AndroidEmulator-Run $AndroidX64.LLVMName
+AndroidEmulator-TearDown
 exit(1)
 
 if ($Clean) {
