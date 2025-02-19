@@ -1,7 +1,7 @@
 name: Run executable tests for the Swift Runtime in the Android Emulator
 
 on:
-  workflow_dispatch:
+  pull_request
 
 jobs:
   swift-runtime-test-android:
