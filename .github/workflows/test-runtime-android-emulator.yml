@@ -1,0 +1,62 @@
+name: Run executable tests for the Swift Runtime in the Android Emulator
+
+jobs:
+  swift-runtime-test-android:
+    runs-on: windows-latest
+    name: Build Swift Rutime Tests for Android ${{ matrix.arch }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            android-api-level: 28
+            triple: x86_64-unknown-linux-android
+
+          - arch: aarch64
+            android-api-level: 28
+            triple: aarch64-unknown-linux-android
+
+    steps:
+      # Cache the contents of $HOME/.android which contains emulators,
+      # snapshots, and adb state.
+      - name: Setup AVD cache
+        uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: ~/.android/**
+          key: avd-${{ runner.os }}-${{ matrix.arch }}-${{ matrix.api-level }}
+
+      - name: Create AVD and generate snapshot for caching
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api-level }}
+          arch: ${{ matrix.arch }}
+          disk-size: 4G
+          force-avd-creation: false
+          emulator-options: -no-window -noaudio -no-boot-anim -camera-back none
+          disable-animations: false
+          script: echo "Generated AVD snapshot for caching."
+
+      - name: Checkout llvm project
+        uses: actions/checkout@v4
+        with:
+          repository: swiftlang/llvm-project
+          path: ${{ github.workspace }}/SourceCache/llvm-project
+
+      - name: Build minimal llvm
+        # -D CMAKE_EXE_LINKER_FLAGS=--ld-path=S:/b/5/bin/ld.lld \
+        # -D CMAKE_SHARED_LINKER_FLAGS=--ld-path=S:/b/5/bin/ld.lld \
+        run: |
+          cmake.exe -G Ninja \
+                    -B ${{ github.workspace }}/BinaryCache/llvm-project \
+                    -S ${{ github.workspace }}/SourceCache/llvm-project/llvm \
+                    -D CMAKE_ANDROID_API=${{ matrix.api-level }} \
+                    -D CMAKE_ANDROID_ARCH_ABI=${{ matrix.arch }} \
+                    -D CMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_LATEST_HOME/build/cmake/android.toolchain.cmake  \
+                    -D CROSS_TOOLCHAIN_FLAGS_NATIVE='-DCMAKE_C_COMPILER=cc;-DCMAKE_CXX_COMPILER=c++'  \
+                    -D CMAKE_BUILD_TYPE=Release \
+                    -D CMAKE_C_COMPILER_WORKS=YES \
+                    -D SWIFT_BUILD_CLANG_OVERLAYS_SKIP_BUILTIN_FLOAT=YES 
+
